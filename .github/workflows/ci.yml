@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # The suite runs with no provider keys, which is also the configuration
+      # most people will first run the app in — so this proves the offline path
+      # genuinely works rather than only the mocked one.
+      - name: Verify it boots and serves with no API keys
+        run: |
+          npm start &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4000/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4000/health
+          curl -sf http://127.0.0.1:4000/v1/capabilities
+          curl -sf http://127.0.0.1:4000/ | grep -q '<div id="root">'
+          kill $SERVER_PID
+        env:
+          PORT: 4000
+          JWT_SECRET: ci-only-secret-value
+          DATABASE_PATH: ./data/ci.sqlite
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high

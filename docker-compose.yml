@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    image: ai-enhancement-app
+    restart: unless-stopped
+    ports:
+      - '${PORT:-4000}:4000'
+    env_file:
+      - .env
+    environment:
+      # Inside the container the paths are fixed; the host mount decides where
+      # the data actually lives.
+      DATABASE_PATH: /app/data/aiapp.sqlite
+      STORAGE_PATH: /app/data/storage
+      ARTIFACT_ROOT: /app/data/artifacts
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

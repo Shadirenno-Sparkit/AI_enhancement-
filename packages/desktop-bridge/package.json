@@ -1,0 +1,13 @@
+{
+  "name": "@aiapp/desktop-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "aiapp-bridge": "./src/bridge.js"
+  },
+  "scripts": {
+    "start": "node src/bridge.js",
+    "once": "node src/bridge.js --once"
+  }
+}
