@@ -75,8 +75,8 @@ export function Capture({
 
   return (
     <>
-      <h1>Capture a link</h1>
-      <p className="lede">
+      {/* The top bar already says "Capture" — the lede does the explaining. */}
+      <p className="lede" style={{ marginTop: 4 }}>
         Paste anything you copied from a social app — the whole caption is fine, the link is found inside it.
       </p>
 
@@ -149,7 +149,7 @@ export function Capture({
         </button>
       </form>
 
-      <h2>One-tap capture from your phone</h2>
+      <p className="section-label">One-tap capture from your phone</p>
       <div className="card card--flat">
         <p className="muted" style={{ fontSize: 14.5 }}>
           Install this app to your home screen and it registers as a share target — after that,

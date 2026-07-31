@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { renderMarkdown, type JobState } from '@aiapp/shared';
+import { IconAlert, IconCheck, IconClose, IconSparkle } from './icons';
 
 export function Spinner({ label }: { label?: string }): JSX.Element {
   return (
@@ -11,6 +12,13 @@ export function Spinner({ label }: { label?: string }): JSX.Element {
   );
 }
 
+const NOTICE_ICONS = {
+  info: IconSparkle,
+  warning: IconAlert,
+  danger: IconAlert,
+  success: IconCheck,
+} as const;
+
 export function Notice({
   kind = 'info',
   children,
@@ -18,9 +26,13 @@ export function Notice({
   kind?: 'info' | 'warning' | 'danger' | 'success';
   children: ReactNode;
 }): JSX.Element {
+  const Icon = NOTICE_ICONS[kind];
   return (
     <div className={`notice notice--${kind}`} role={kind === 'danger' ? 'alert' : 'status'}>
-      {children}
+      <span className="notice__icon">
+        <Icon size={17} />
+      </span>
+      <div className="notice__body">{children}</div>
     </div>
   );
 }
@@ -29,7 +41,7 @@ export function Badge({
   tone = 'default',
   children,
 }: {
-  tone?: 'default' | 'accent' | 'success' | 'warning' | 'danger' | 'info';
+  tone?: 'default' | 'accent' | 'success' | 'warning' | 'danger' | 'info' | 'chip';
   children: ReactNode;
 }): JSX.Element {
   return <span className={tone === 'default' ? 'badge' : `badge badge--${tone}`}>{children}</span>;
@@ -40,7 +52,8 @@ export function Empty({
   title,
   children,
 }: {
-  icon: string;
+  /** Rendered inside a neutral tile so empty states read as designed, not as a stray glyph. */
+  icon: ReactNode;
   title: string;
   children?: ReactNode;
 }): JSX.Element {
@@ -51,6 +64,57 @@ export function Empty({
       </div>
       <h2 style={{ margin: '0 0 6px', fontSize: 17 }}>{title}</h2>
       {children ? <p className="muted" style={{ maxWidth: 380, margin: '0 auto' }}>{children}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * One control, N mutually exclusive states.
+ *
+ * `role` matters: filters are `tablist`/`tab` (they change what is shown),
+ * while a decision is `radiogroup`/`radio` (it records a choice). The visual
+ * treatment is shared; the semantics are not.
+ */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  as = 'tabs',
+  className,
+}: {
+  value: T | null;
+  options: { id: T; label: string; count?: number; icon?: ReactNode }[];
+  onChange: (id: T) => void;
+  label: string;
+  as?: 'tabs' | 'radio';
+  className?: string;
+}): JSX.Element {
+  const isTabs = as === 'tabs';
+  return (
+    <div
+      className={className ? `segmented ${className}` : 'segmented'}
+      role={isTabs ? 'tablist' : 'radiogroup'}
+      aria-label={label}
+    >
+      {options.map((option) => {
+        const selected = value === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            className="segmented__option"
+            data-choice={option.id}
+            role={isTabs ? 'tab' : 'radio'}
+            {...(isTabs ? { 'aria-selected': selected } : { 'aria-checked': selected })}
+            onClick={() => onChange(option.id)}
+          >
+            {option.icon}
+            {option.label}
+            {option.count ? <span className="segmented__count">{option.count}</span> : null}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -69,6 +133,19 @@ export function Toast({ message, onDone }: { message: string | null; onDone: () 
       {message}
     </div>
   );
+}
+
+/**
+ * Puts the app into "commit mode" while a sticky action bar is on screen: the
+ * tab bar stands down and the main content pads to clear the taller bar, so the
+ * card the user just decided on is never hidden underneath the approve button.
+ */
+export function useCommitMode(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    document.body.classList.add('has-actionbar');
+    return () => document.body.classList.remove('has-actionbar');
+  }, [active]);
 }
 
 /** Plain-language status label. Users never see the raw state machine. */
@@ -123,12 +200,28 @@ export function Disclosure({
   return (
     <>
       <button type="button" className="disclosure" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? '▾' : '▸'} {summary}
+        <svg
+          className="disclosure__caret"
+          width={12}
+          height={12}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={3}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+        {summary}
       </button>
       {open ? <div className="item__details">{children}</div> : null}
     </>
   );
 }
+
+export { IconCheck, IconClose };
 
 export function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();

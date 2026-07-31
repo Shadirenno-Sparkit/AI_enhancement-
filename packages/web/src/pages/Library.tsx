@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { PLATFORM_LABELS } from '@aiapp/shared';
 import type { LibraryEntry } from '@aiapp/shared';
 import { api } from '../api';
-import { Badge, Empty, Notice, Spinner, StateBadge, relativeTime } from '../components/ui';
+import { Badge, Empty, Notice, Segmented, Spinner, StateBadge, relativeTime } from '../components/ui';
+import { IconDownload, IconLink, IconRefresh } from '../components/icons';
 import { useAsync } from '../hooks';
 
 type Filter = 'all' | 'review' | 'done' | 'attention';
@@ -13,6 +14,8 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'done', label: 'Done' },
   { id: 'all', label: 'All' },
 ];
+
+const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'];
 
 /** The inbox: every captured link and where it got to (BR-F4). */
 export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): JSX.Element {
@@ -25,11 +28,7 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
       // Poll while anything is still moving so the list updates itself.
       intervalMs: 5000,
       stopWhen: (result) =>
-        !result.entries.some((entry) =>
-          ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED', 'IMPLEMENTING'].includes(
-            entry.state,
-          ),
-        ),
+        !result.entries.some((entry) => [...PROCESSING_STATES, 'IMPLEMENTING'].includes(entry.state)),
     },
   );
 
@@ -42,27 +41,23 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
 
   return (
     <>
-      <div className="split">
-        <h1>Your links</h1>
-        <button className="btn btn--ghost btn--sm" onClick={reload} aria-label="Refresh">
-          ↻
+      {/* The top bar already says "Inbox" — a second heading here just pushed
+          the list further down the screen. */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Segmented
+            label="Filter links"
+            value={filter}
+            onChange={setFilter}
+            options={FILTERS.map((option) => ({
+              ...option,
+              count: option.id === 'review' ? counts.review : option.id === 'attention' ? counts.attention : undefined,
+            }))}
+          />
+        </div>
+        <button className="btn btn--ghost btn--icon" onClick={reload} aria-label="Refresh">
+          <IconRefresh size={18} />
         </button>
-      </div>
-
-      <div className="btn-row" style={{ marginBottom: 16 }} role="tablist" aria-label="Filter links">
-        {FILTERS.map((option) => (
-          <button
-            key={option.id}
-            role="tab"
-            aria-selected={filter === option.id}
-            className={filter === option.id ? 'btn btn--sm' : 'btn btn--secondary btn--sm'}
-            onClick={() => setFilter(option.id)}
-          >
-            {option.label}
-            {option.id === 'review' && counts.review > 0 ? ` (${counts.review})` : ''}
-            {option.id === 'attention' && counts.attention > 0 ? ` (${counts.attention})` : ''}
-          </button>
-        ))}
       </div>
 
       {error ? <Notice kind="danger">{error}</Notice> : null}
@@ -73,7 +68,7 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
       ) : null}
 
       {!loading && filtered.length === 0 ? (
-        <Empty icon="🔗" title={emptyTitle(filter)}>
+        <Empty icon={<IconLink size={26} />} title={emptyTitle(filter)}>
           {filter === 'all'
             ? 'Share a post to this app from your phone, or paste a link on the Capture tab.'
             : 'Nothing in this view right now.'}
@@ -89,7 +84,8 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
       {entries.length > 0 ? (
         <div className="btn-row" style={{ marginTop: 20 }}>
           <a className="btn btn--secondary btn--sm" href={api.exportAllUrl()} download>
-            ⬇ Download the whole folder
+            <IconDownload size={15} />
+            Download the whole folder
           </a>
         </div>
       ) : null}
@@ -99,7 +95,7 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
 
 function LibraryRow({ entry, onOpen }: { entry: LibraryEntry; onOpen: () => void }): JSX.Element {
   const pending = entry.itemCounts.pending;
-  const processing = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'].includes(entry.state);
+  const processing = PROCESSING_STATES.includes(entry.state);
 
   return (
     <button type="button" className="card card--interactive" onClick={onOpen}>
@@ -119,13 +115,17 @@ function LibraryRow({ entry, onOpen }: { entry: LibraryEntry; onOpen: () => void
         </p>
       ) : null}
 
-      <div className="badge-row">
-        {pending > 0 ? <Badge tone="accent">{pending} to decide</Badge> : null}
-        {entry.itemCounts.approved > 0 ? <Badge tone="success">{entry.itemCounts.approved} approved</Badge> : null}
-        {entry.itemCounts.deferred > 0 ? <Badge tone="warning">{entry.itemCounts.deferred} deferred</Badge> : null}
-        {entry.lowConfidence ? <Badge tone="warning">low confidence</Badge> : null}
-        {entry.cost.usd > 0 ? <Badge>${entry.cost.usd.toFixed(3)}</Badge> : null}
-      </div>
+      {/* Only what changes the decision to open this row. Per-link processing
+          cost lives on the Digest and Settings screens — it is a metric about
+          the app, not about the link. */}
+      {pending > 0 || entry.itemCounts.approved > 0 || entry.itemCounts.deferred > 0 || entry.lowConfidence ? (
+        <div className="badge-row">
+          {pending > 0 ? <Badge tone="accent">{pending} to decide</Badge> : null}
+          {entry.itemCounts.approved > 0 ? <Badge tone="success">{entry.itemCounts.approved} approved</Badge> : null}
+          {entry.itemCounts.deferred > 0 ? <Badge tone="warning">{entry.itemCounts.deferred} deferred</Badge> : null}
+          {entry.lowConfidence ? <Badge tone="warning">low confidence</Badge> : null}
+        </div>
+      ) : null}
     </button>
   );
 }

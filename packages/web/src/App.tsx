@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@aiapp/shared';
 import { api, loadTokens, saveTokens, type Capabilities } from './api';
 import { Notice, Spinner, Toast } from './components/ui';
+import { IconChart, IconCheck, IconGear, IconInbox, IconPlus, IconArrowLeft } from './components/icons';
 import { useAsync, useHashRoute } from './hooks';
 import { flushQueue, registerServiceWorker } from './shareQueue';
 import { Auth } from './pages/Auth';
@@ -12,11 +13,25 @@ import { Review } from './pages/Review';
 import { Settings } from './pages/Settings';
 
 const TABS = [
-  { path: '/library', icon: '📥', label: 'Inbox' },
-  { path: '/capture', icon: '＋', label: 'Capture' },
-  { path: '/digest', icon: '📊', label: 'Digest' },
-  { path: '/settings', icon: '⚙︎', label: 'Settings' },
+  { path: '/library', Icon: IconInbox, label: 'Inbox' },
+  { path: '/capture', Icon: IconPlus, label: 'Capture' },
+  { path: '/digest', Icon: IconChart, label: 'Digest' },
+  { path: '/settings', Icon: IconGear, label: 'Settings' },
 ];
+
+/**
+ * What the top bar says for a given route. It used to read "AI Enhancement App"
+ * on every screen — the one thing the user already knows, taking the one slot
+ * that could tell them where they are.
+ */
+function titleFor(route: string): string {
+  if (route.startsWith('/job/')) return 'Review';
+  if (route.startsWith('/captured')) return 'Captured';
+  if (route.startsWith('/capture')) return 'Capture';
+  if (route.startsWith('/digest')) return 'Digest';
+  if (route.startsWith('/settings')) return 'Settings';
+  return 'Inbox';
+}
 
 export function App(): JSX.Element {
   const [route, navigate] = useHashRoute();
@@ -104,13 +119,20 @@ export function App(): JSX.Element {
   }
 
   const activeTab = TABS.find((tab) => route.startsWith(tab.path))?.path ?? '/library';
+  const isDetail = route.startsWith('/job/');
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="topbar__inner">
-          <img src="/icon.svg" alt="" width={26} height={26} style={{ borderRadius: 7 }} />
-          <h1 className="topbar__title">AI Enhancement App</h1>
+          {isDetail ? (
+            <button className="topbar__back" onClick={() => navigate('/library')} aria-label="Back to inbox">
+              <IconArrowLeft size={20} />
+            </button>
+          ) : (
+            <img src="/icon.svg" alt="" width={26} height={26} style={{ borderRadius: 7 }} />
+          )}
+          <h1 className="topbar__title">{titleFor(route)}</h1>
           {pendingCaptures > 0 ? (
             <span className="badge badge--warning">{pendingCaptures} queued</span>
           ) : null}
@@ -137,8 +159,8 @@ export function App(): JSX.Element {
             href={`#${tab.path}`}
             aria-current={activeTab === tab.path ? 'page' : undefined}
           >
-            <span className="tabbar__icon" aria-hidden="true">
-              {tab.icon}
+            <span className="tabbar__icon">
+              <tab.Icon size={21} />
             </span>
             {tab.label}
           </a>
@@ -169,7 +191,7 @@ function Router({
 }): JSX.Element {
   const jobMatch = route.match(/^\/job\/([\w-]+)/);
   if (jobMatch?.[1]) {
-    return <Review jobId={jobMatch[1]} onBack={() => navigate('/library')} toast={toast} />;
+    return <Review jobId={jobMatch[1]} toast={toast} />;
   }
 
   if (route.startsWith('/captured')) {
@@ -221,8 +243,12 @@ function Captured({ onDone }: { onDone: () => void }): JSX.Element {
 
   return (
     <div className="empty" style={{ paddingTop: 80 }}>
-      <div className="empty__icon" aria-hidden="true">
-        ✓
+      <div
+        className="empty__icon"
+        style={{ background: 'var(--success-soft)', color: 'var(--success)' }}
+        aria-hidden="true"
+      >
+        <IconCheck size={28} />
       </div>
       <h2 style={{ margin: '0 0 6px' }}>Captured</h2>
       <p className="muted">Processing it now — you will be notified when the spec is ready.</p>

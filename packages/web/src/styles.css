@@ -5,6 +5,17 @@
    the viewport, tap targets are at least 44px, and every interactive element
    keeps a visible focus ring. Colour pairs are chosen to clear WCAG AA in both
    themes (BRD §11 "Usability & accessibility").
+
+   Three rules hold the system together:
+
+     1. One decision per card. Anything that does not change the user's answer
+        moves behind a disclosure.
+     2. Accent means act. Indigo marks the thing to touch — never a category
+        label. State is carried by semantic colour (success/warning/danger) and
+        by the card's own stripe, so a screen full of metadata does not read as
+        a screen full of buttons.
+     3. Chrome serves the content. The top bar says where you are; the bottom
+        bar becomes a commit bar when there are decisions to submit.
    ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
@@ -29,6 +40,10 @@
   --info: #1b5e94;
   --info-soft: #dcedfa;
 
+  /* Neutral chip: category labels use this so they never compete with actions. */
+  --chip-bg: #eef0f7;
+  --chip-text: #4a5070;
+
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 1px 2px rgb(20 22 43 / 6%), 0 6px 20px rgb(20 22 43 / 6%);
@@ -36,6 +51,10 @@
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --max-width: 780px;
+
+  /* Height of the fixed bottom chrome, so main content can clear it exactly. */
+  --tabbar-h: 58px;
+  --actionbar-h: 74px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -60,6 +79,8 @@
     --danger-soft: #38151a;
     --info: #7cc4f5;
     --info-soft: #10283c;
+    --chip-bg: #1e2440;
+    --chip-text: #aab0d0;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 20px rgb(0 0 0 / 30%);
     --shadow-lg: 0 10px 40px rgb(0 0 0 / 55%);
   }
@@ -113,7 +134,14 @@ body {
   width: 100%;
   max-width: var(--max-width);
   margin: 0 auto;
-  padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+  padding: 16px 16px calc(var(--tabbar-h) + 32px + env(safe-area-inset-bottom));
+}
+
+/* Commit mode: the action bar takes over the bottom of the screen, so content
+   has to clear a taller bar. Without this the last item card sits underneath
+   the approve button — exactly the card the user just decided on. */
+body.has-actionbar .app__main {
+  padding-bottom: calc(var(--actionbar-h) + 32px + env(safe-area-inset-bottom));
 }
 
 .topbar {
@@ -132,7 +160,7 @@ body {
   padding: 10px 16px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-height: 56px;
 }
 
@@ -145,6 +173,30 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+/* Back sits in the chrome, not in the content. One back affordance, always in
+   the same place, and the content starts with the thing it is about. */
+.topbar__back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: -6px;
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+
+.topbar__back:hover {
+  background: var(--bg-sunken);
+  color: var(--text);
 }
 
 .tabbar {
@@ -160,6 +212,13 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* While there are decisions waiting to be submitted the tab bar stands down.
+   Two stacked fixed bars ate ~120px of a phone screen and made the primary
+   action compete with navigation. */
+body.has-actionbar .tabbar {
+  display: none;
+}
+
 .tabbar__item {
   flex: 1;
   display: flex;
@@ -167,7 +226,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 3px;
-  min-height: 58px;
+  min-height: var(--tabbar-h);
   padding: 8px 4px;
   border: 0;
   background: none;
@@ -177,6 +236,7 @@ body {
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
+  transition: color 0.15s ease;
 }
 
 .tabbar__item[aria-current='page'] {
@@ -184,13 +244,17 @@ body {
 }
 
 .tabbar__icon {
-  font-size: 20px;
+  display: grid;
+  place-items: center;
   line-height: 1;
+  position: relative;
 }
 
 .tabbar__badge {
   position: absolute;
-  transform: translate(14px, -12px);
+  top: -5px;
+  left: 50%;
+  transform: translateX(4px);
   background: var(--accent);
   color: var(--accent-text);
   font-size: 10px;
@@ -210,12 +274,14 @@ h1 {
   line-height: 1.25;
   margin: 4px 0 6px;
   letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
 h2 {
   font-size: 19px;
   margin: 26px 0 10px;
   letter-spacing: -0.01em;
+  text-wrap: balance;
 }
 
 h3 {
@@ -246,6 +312,18 @@ a {
   font-size: 13px;
 }
 
+/* Reference material — "Technical spec", "Files", "Run log". These sections sit
+   below the decision and must not compete with it, so they get an eyebrow
+   instead of another 19px heading. */
+.section-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 28px 0 8px;
+}
+
 code,
 .mono {
   font-family: var(--mono);
@@ -256,6 +334,10 @@ code {
   background: var(--bg-sunken);
   padding: 1px 5px;
   border-radius: 5px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Cards ────────────────────────────────────────────────────────────────── */
@@ -375,23 +457,108 @@ code {
   font-size: 13.5px;
 }
 
+/* Square icon-only control; keeps the 44px touch target without the label. */
+.btn--icon {
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+}
+
 .btn-row {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-/* Sticky action bar above the tab bar — where the approve button lives. */
+/* ── Segmented control ────────────────────────────────────────────────────── */
+
+/* One control, N mutually exclusive states. Replaces rows of solid/outline
+   buttons, which read as N separate actions rather than one setting. */
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.segmented__option {
+  flex: 1;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 620;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.segmented__option:hover:not([aria-selected='true']):not([aria-checked='true']) {
+  color: var(--text);
+}
+
+.segmented__option[aria-selected='true'],
+.segmented__option[aria-checked='true'] {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.segmented__count {
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Decision control. The three states are graded by how committed they are, so
+   the fill itself carries the meaning: approve is solid, "later" is held
+   (soft + outlined, deliberately not finished-looking), skip is dismissed. */
+.segmented--decide .segmented__option[aria-checked='true'][data-choice='approve'] {
+  background: var(--success);
+  color: var(--bg-elevated);
+  box-shadow: none;
+}
+
+.segmented--decide .segmented__option[aria-checked='true'][data-choice='defer'] {
+  background: var(--warning-soft);
+  color: var(--warning);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.segmented--decide .segmented__option[aria-checked='true'][data-choice='forgo'] {
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  box-shadow: inset 0 0 0 1.5px var(--border-strong);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+/* Sticky action bar — where the approve button lives. In commit mode it owns
+   the bottom of the screen rather than stacking on top of the tab bar. */
 .actionbar {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(58px + env(safe-area-inset-bottom));
-  z-index: 19;
+  bottom: 0;
+  z-index: 21;
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--border);
-  padding: 12px 16px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
   box-shadow: 0 -6px 24px rgb(0 0 0 / 8%);
 }
 
@@ -400,7 +567,7 @@ code {
   margin: 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* ── Forms ────────────────────────────────────────────────────────────────── */
@@ -462,6 +629,40 @@ code {
   cursor: pointer;
 }
 
+/* Selectable option card — trust postures, and anything else where the choice
+   is consequential enough to deserve more than a 1px border change. */
+.option-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  cursor: pointer;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 8px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.option-card:hover {
+  border-color: var(--border-strong);
+}
+
+.option-card--selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg-elevated));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.option-card input[type='radio'] {
+  width: 22px;
+  height: 22px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
 /* ── Badges & pills ───────────────────────────────────────────────────────── */
 
 .badge {
@@ -484,6 +685,14 @@ code {
 .badge--danger { background: var(--danger-soft); color: var(--danger); }
 .badge--info { background: var(--info-soft); color: var(--info); }
 
+/* Category label. Deliberately neutral: what kind of thing an item is does not
+   tell you whether to approve it, so it must not look like the accent. */
+.badge--chip {
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  font-weight: 600;
+}
+
 .badge-row {
   display: flex;
   gap: 6px;
@@ -500,6 +709,19 @@ code {
   margin-bottom: 14px;
   font-size: 14.5px;
   border: 1px solid transparent;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.notice__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.notice__body {
+  min-width: 0;
+  flex: 1;
 }
 
 .notice--info { background: var(--info-soft); color: var(--info); border-color: color-mix(in srgb, var(--info) 25%, transparent); }
@@ -544,33 +766,55 @@ code {
 /* ── Item review ──────────────────────────────────────────────────────────── */
 
 .item {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elevated);
   margin-bottom: 12px;
   overflow: hidden;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* A left stripe carries decision state. Filling the whole card with colour
+   made an approved item shout louder than the undecided ones still needing
+   attention — the stripe reads at a glance without taking over the card. */
+.item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.item--undecided::before {
+  background: var(--accent);
 }
 
 .item--approved {
-  border-color: color-mix(in srgb, var(--success) 45%, transparent);
-  background: color-mix(in srgb, var(--success-soft) 45%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
+
+.item--approved::before {
+  background: var(--success);
+}
+
+.item--deferred::before {
+  background: var(--warning);
 }
 
 .item--forgone {
-  opacity: 0.62;
+  opacity: 0.55;
+}
+
+.item--forgone::before {
+  background: var(--border-strong);
 }
 
 .item__head {
-  display: flex;
-  gap: 12px;
-  padding: 14px;
-  align-items: flex-start;
-}
-
-.item__body {
-  flex: 1;
-  min-width: 0;
+  padding: 14px 14px 12px 17px;
 }
 
 .item__title {
@@ -578,12 +822,52 @@ code {
   font-size: 15.5px;
   line-height: 1.35;
   margin: 0 0 4px;
+  display: block;
 }
 
 .item__why {
   color: var(--text-muted);
   font-size: 14px;
   margin: 0;
+}
+
+/* One compact metadata line replaces the row of effort/impact pills. Effort and
+   impact were a fixed function of the item type, so three pills encoded one
+   fact; this shows them only when the analyser actually diverged from the
+   type's default, and as text rather than as more chrome. */
+.item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 9px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.item__meta-sep {
+  opacity: 0.5;
+}
+
+.item__flag {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--warning);
+}
+
+.item__result {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-size: 13.5px;
+}
+
+.item__decide {
+  padding: 0 14px 12px 17px;
 }
 
 .item__details {
@@ -623,16 +907,34 @@ code {
 .disclosure {
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--text-muted);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 620;
   cursor: pointer;
-  padding: 8px 14px;
-  display: block;
+  padding: 9px 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   text-align: left;
   border-top: 1px solid var(--border);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.disclosure:hover {
+  color: var(--text);
+  background: var(--bg-sunken);
+}
+
+.disclosure__caret {
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.disclosure[aria-expanded='true'] .disclosure__caret {
+  transform: rotate(90deg);
 }
 
 /* ── Misc ─────────────────────────────────────────────────────────────────── */
@@ -671,6 +973,43 @@ code {
   }
 }
 
+/* Settings grouping — related preferences read as one panel instead of a flat
+   scroll of seven equal-weight headings. */
+.group {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+
+.group__head {
+  padding: 12px 0 4px;
+}
+
+.group__title {
+  font-size: 16px;
+  font-weight: 650;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.group__hint {
+  color: var(--text-muted);
+  font-size: 13.5px;
+  margin: 3px 0 0;
+}
+
+.group__row {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.group__row:first-of-type {
+  border-top: 0;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -684,11 +1023,23 @@ code {
   padding: 13px;
 }
 
+.stat--hero {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent-soft) 35%, var(--bg-elevated)));
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
 .stat__value {
   font-size: 24px;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat--hero .stat__value {
+  font-size: 34px;
+  color: var(--accent);
 }
 
 .stat__label {
@@ -704,9 +1055,14 @@ code {
 }
 
 .empty__icon {
-  font-size: 42px;
-  margin-bottom: 10px;
-  opacity: 0.65;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
+  background: var(--bg-sunken);
+  color: var(--text-faint);
 }
 
 .list-reset {
@@ -732,7 +1088,7 @@ code {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: calc(130px + env(safe-area-inset-bottom));
+  bottom: calc(var(--tabbar-h) + 24px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 50;
   background: var(--text);
@@ -744,6 +1100,10 @@ code {
   box-shadow: var(--shadow-lg);
   max-width: calc(100vw - 32px);
   text-align: center;
+}
+
+body.has-actionbar .toast {
+  bottom: calc(var(--actionbar-h) + 24px + env(safe-area-inset-bottom));
 }
 
 .auth-shell {
@@ -786,6 +1146,10 @@ code {
 .prose {
   font-size: 14.5px;
   line-height: 1.65;
+}
+
+.prose > *:last-child {
+  margin-bottom: 0;
 }
 
 .prose pre {

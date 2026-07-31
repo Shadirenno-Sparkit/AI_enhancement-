@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import type { DecisionChoice, ItemResult, ItemType, Provenance } from '@aiapp/shared';
 import { PLATFORM_LABELS } from '@aiapp/shared';
 import { api, type ReviewItem, type SpecView } from '../api';
-import { Badge, Disclosure, Markdown, Notice, Progress, Spinner, relativeTime } from '../components/ui';
+import {
+  Badge,
+  Disclosure,
+  Markdown,
+  Notice,
+  Progress,
+  Segmented,
+  Spinner,
+  relativeTime,
+  useCommitMode,
+} from '../components/ui';
+import { IconAlert, IconDownload, IconExternal, IconFile } from '../components/icons';
 import { useAsync } from '../hooks';
 
 const TYPE_LABELS: Record<ItemType, string> = {
@@ -30,6 +41,13 @@ const PROVENANCE_LABELS: Record<Provenance, string> = {
 
 const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'];
 
+/** The three outcomes an item can have, in escalating order of commitment. */
+const DECISION_OPTIONS: { id: DecisionChoice; label: string }[] = [
+  { id: 'forgo', label: 'Skip' },
+  { id: 'defer', label: 'Later' },
+  { id: 'approve', label: 'Approve' },
+];
+
 /**
  * The review screen (spec §4.5).
  *
@@ -37,15 +55,7 @@ const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NO
  * becomes the approve/forgo gate. Decisions default to unselected — nothing is
  * opt-out (BR-R2).
  */
-export function Review({
-  jobId,
-  onBack,
-  toast,
-}: {
-  jobId: string;
-  onBack: () => void;
-  toast: (message: string) => void;
-}): JSX.Element {
+export function Review({ jobId, toast }: { jobId: string; toast: (message: string) => void }): JSX.Element {
   const status = useAsync(() => api.jobStatus(jobId), [jobId], {
     intervalMs: 3000,
     stopWhen: (data) => !PROCESSING_STATES.includes(data.job.state),
@@ -74,15 +84,19 @@ export function Review({
 
   return (
     <>
-      <button className="btn btn--ghost btn--sm" onClick={onBack} style={{ marginBottom: 6 }}>
-        ← Back
-      </button>
-
       <h1>{job.title ?? `${PLATFORM_LABELS[job.platform]} post`}</h1>
-      <p className="faint" style={{ marginBottom: 14 }}>
-        {PLATFORM_LABELS[job.platform]} · captured {relativeTime(job.createdAt)} ·{' '}
-        <a href={job.url} target="_blank" rel="noopener noreferrer">
+      <p className="faint" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span>
+          {PLATFORM_LABELS[job.platform]} · captured {relativeTime(job.createdAt)}
+        </span>
+        <a
+          href={job.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+        >
           open original
+          <IconExternal size={12} />
         </a>
       </p>
 
@@ -173,6 +187,10 @@ function SpecReview({
     [selection, spec.items],
   );
 
+  // While there are decisions to submit, the bottom of the screen belongs to
+  // the commit bar rather than to navigation.
+  useCommitMode(anyChange);
+
   const setChoice = (itemId: string, choice: DecisionChoice | null): void => {
     setSelection((current) => ({ ...current, [itemId]: choice }));
   };
@@ -222,7 +240,9 @@ function SpecReview({
               {(extraction.overallConfidence * 100).toFixed(0)}% confidence
             </Badge>
             {extraction.methodsUsed.map((method) => (
-              <Badge key={method}>{PROVENANCE_LABELS[method]}</Badge>
+              <Badge key={method} tone="chip">
+                {PROVENANCE_LABELS[method]}
+              </Badge>
             ))}
           </div>
         ) : null}
@@ -305,8 +325,8 @@ function SpecReview({
 
       {run ? <RunResults run={run} /> : null}
 
-      <h2>Technical spec</h2>
-      <div className="card">
+      <p className="section-label">Technical spec</p>
+      <div className="card" style={{ padding: 0 }}>
         <Disclosure summary="Show the full technical specification">
           <Markdown source={spec.technicalSpec} />
         </Disclosure>
@@ -325,13 +345,15 @@ function ItemCard({
   item: ReviewItem;
   choice: DecisionChoice | null;
   result: ItemResult | undefined;
-  onChoose: (choice: DecisionChoice | null) => void;
+  onChoose: (choice: DecisionChoice) => void;
   onRevert: () => void | Promise<void>;
 }): JSX.Element {
   const blocked = item.missingPrerequisites.length > 0;
   const className = [
     'item',
+    choice === null ? 'item--undecided' : '',
     choice === 'approve' ? 'item--approved' : '',
+    choice === 'defer' ? 'item--deferred' : '',
     choice === 'forgo' ? 'item--forgone' : '',
   ]
     .filter(Boolean)
@@ -340,64 +362,60 @@ function ItemCard({
   return (
     <div className={className}>
       <div className="item__head">
-        <input
-          type="checkbox"
-          id={`item-${item.itemId}`}
-          checked={choice === 'approve'}
-          onChange={(e) => onChoose(e.target.checked ? 'approve' : 'forgo')}
-          style={{ width: 24, height: 24, marginTop: 2, accentColor: 'var(--accent)' }}
-          aria-describedby={`why-${item.itemId}`}
-        />
-        <div className="item__body">
-          <label className="item__title" htmlFor={`item-${item.itemId}`}>
-            {item.title}
-          </label>
-          <p className="item__why" id={`why-${item.itemId}`}>
-            {item.why}
+        <p className="item__title">{item.title}</p>
+        <p className="item__why" id={`why-${item.itemId}`}>
+          {item.why}
+        </p>
+
+        {/* One quiet line instead of four competing pills. Type is the only
+            thing that changes what happens; effort and impact are context. */}
+        <div className="item__meta">
+          <Badge tone="chip">{TYPE_LABELS[item.type]}</Badge>
+          <span>
+            {item.effort} effort
+            <span className="item__meta-sep"> · </span>
+            {item.impact} impact
+          </span>
+          {item.duplicateOfItemId ? <Badge tone="info">similar to one you did</Badge> : null}
+          {result ? <Badge tone={resultTone(result.status)}>{result.status.replace('_', ' ')}</Badge> : null}
+        </div>
+
+        {blocked ? (
+          <p className="item__flag">
+            <IconAlert size={15} />
+            <span>Needs {item.missingPrerequisites.join(', ')} — connect it in Settings to enable this.</span>
           </p>
+        ) : null}
 
-          <div className="badge-row">
-            <Badge tone="accent">{TYPE_LABELS[item.type]}</Badge>
-            <Badge>{item.effort} effort</Badge>
-            <Badge tone={item.impact === 'high' ? 'success' : 'default'}>{item.impact} impact</Badge>
-            {item.riskTier !== 'safe' ? <Badge tone="warning">{item.riskTier}</Badge> : null}
-            {item.requiresBrowser ? <Badge tone="info">uses browser</Badge> : null}
-            {item.duplicateOfItemId ? <Badge tone="info">similar to one you did</Badge> : null}
-            {result ? <Badge tone={resultTone(result.status)}>{result.status.replace('_', ' ')}</Badge> : null}
-          </div>
+        {!item.autonomy.autoImplement ? (
+          <p className="faint" style={{ marginTop: 8, marginBottom: 0 }}>
+            {item.autonomy.reason}
+          </p>
+        ) : null}
 
-          {blocked ? (
-            <p className="faint" style={{ marginTop: 8, color: 'var(--warning)' }}>
-              ⚠︎ Needs {item.missingPrerequisites.join(', ')} — connect it in Settings to enable this.
-            </p>
-          ) : null}
-
-          {!item.autonomy.autoImplement ? (
-            <p className="faint" style={{ marginTop: 6 }}>
-              {item.autonomy.reason}
-            </p>
-          ) : null}
-
-          {result ? (
-            <p className="faint" style={{ marginTop: 8, color: 'var(--text)' }}>
-              {result.summary}
-            </p>
-          ) : null}
-
-          <div className="btn-row" style={{ marginTop: 10 }}>
-            <button
-              className={choice === 'defer' ? 'btn btn--sm' : 'btn btn--ghost btn--sm'}
-              onClick={() => onChoose(choice === 'defer' ? null : 'defer')}
-            >
-              Maybe later
-            </button>
-            {result?.reversible ? (
-              <button className="btn btn--ghost btn--sm" onClick={() => void onRevert()}>
-                Undo
-              </button>
+        {result ? (
+          <div className="item__result">
+            {result.summary}
+            {result.reversible ? (
+              <div className="btn-row" style={{ marginTop: 8 }}>
+                <button className="btn btn--ghost btn--sm" onClick={() => void onRevert()}>
+                  Undo
+                </button>
+              </div>
             ) : null}
           </div>
-        </div>
+        ) : null}
+      </div>
+
+      <div className="item__decide">
+        <Segmented
+          className="segmented--decide"
+          as="radio"
+          label={`Decision for ${item.title}`}
+          value={choice}
+          options={DECISION_OPTIONS}
+          onChange={onChoose}
+        />
       </div>
 
       <Disclosure summary="Details & where this came from">
@@ -411,6 +429,11 @@ function ItemCard({
                 {scope}
               </code>
             ))}
+          </dd>
+          <dt>Risk</dt>
+          <dd>
+            {item.riskTier}
+            {item.requiresBrowser ? ' · uses the browser' : ''}
           </dd>
           {item.prerequisites.length > 0 ? (
             <>
@@ -464,7 +487,7 @@ function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
 
       <div className="card">
         <p className="faint" style={{ margin: '0 0 10px' }}>
-          Run {run.runId} · {run.status}
+          {run.status}
           {run.finishedAt ? ` · finished ${relativeTime(run.finishedAt)}` : ''}
         </p>
 
@@ -480,12 +503,13 @@ function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
               {item.summary}
             </p>
             {item.needsInput ? (
-              <p className="faint" style={{ margin: '4px 0 0', color: 'var(--warning)' }}>
-                → {item.needsInput}
+              <p className="item__flag" style={{ marginTop: 6 }}>
+                <IconAlert size={15} />
+                <span>{item.needsInput}</span>
               </p>
             ) : null}
             {item.artifacts.length > 0 ? (
-              <p className="faint" style={{ margin: '4px 0 0' }}>
+              <p className="faint" style={{ margin: '6px 0 0' }}>
                 Files: {item.artifacts.map((artifact) => <code key={artifact} style={{ marginRight: 5 }}>{artifact}</code>)}
               </p>
             ) : null}
@@ -497,8 +521,11 @@ function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
             <ul className="list-reset" style={{ fontSize: 13.5 }}>
               {run.actions.map((action, index) => (
                 <li key={index} style={{ padding: '3px 0' }}>
-                  <span className="faint">{action.at.slice(11, 19)}</span> {action.ok ? '✓' : '✗'} {action.action} —{' '}
-                  <span className="muted">{action.detail}</span>
+                  <span className="faint tabular">{action.at.slice(11, 19)}</span>{' '}
+                  <span style={{ color: action.ok ? 'var(--success)' : 'var(--danger)' }}>
+                    {action.ok ? '✓' : '✗'}
+                  </span>{' '}
+                  {action.action} — <span className="muted">{action.detail}</span>
                 </li>
               ))}
             </ul>
@@ -515,7 +542,7 @@ function Artifacts({ jobId }: { jobId: string }): JSX.Element | null {
 
   return (
     <>
-      <h2>Files</h2>
+      <p className="section-label">Files</p>
       <div className="card">
         <p className="faint" style={{ marginTop: 0 }}>
           Everything for this link lives in <code>{data.folderName}</code>.
@@ -525,7 +552,12 @@ function Artifacts({ jobId }: { jobId: string }): JSX.Element | null {
             .filter((file) => !file.startsWith('media/'))
             .map((file) => (
               <li key={file}>
-                <code style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{file}</code>
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, color: 'var(--text-muted)' }}
+                >
+                  <IconFile size={15} />
+                  <code style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{file}</code>
+                </span>
                 <a
                   className="btn btn--ghost btn--sm"
                   href={api.fileUrl(jobId, file)}
@@ -538,7 +570,8 @@ function Artifacts({ jobId }: { jobId: string }): JSX.Element | null {
             ))}
         </ul>
         <a className="btn btn--secondary btn--block" href={api.exportUrl(jobId)} download style={{ marginTop: 12 }}>
-          ⬇ Download this folder (.zip)
+          <IconDownload size={16} />
+          Download this folder (.zip)
         </a>
       </div>
     </>
