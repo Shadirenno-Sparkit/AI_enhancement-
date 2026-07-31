@@ -71,6 +71,10 @@ export interface Config {
   visionProvider: string;
   tesseractBin: string;
   ytdlpBin: string;
+  /** Browser to lift cookies from, e.g. "chrome" | "safari" | "firefox". */
+  ytdlpCookiesFromBrowser: string;
+  /** Path to a Netscape-format cookies.txt, as an alternative to the above. */
+  ytdlpCookiesFile: string;
   ffmpegBin: string;
   enableBrowserAgent: boolean;
   maxUsdPerLink: number;
@@ -132,6 +136,11 @@ export function loadConfig(): Config {
     visionProvider: str('VISION_PROVIDER', 'stub'),
     tesseractBin: str('TESSERACT_BIN', 'tesseract'),
     ytdlpBin: str('YTDLP_BIN', 'yt-dlp'),
+    // Instagram (and increasingly TikTok) return an empty media response to
+    // signed-out clients. Point one of these at your own session to fetch the
+    // posts you can already see — see the note in ingestion/fetcher.ts.
+    ytdlpCookiesFromBrowser: str('YTDLP_COOKIES_FROM_BROWSER', ''),
+    ytdlpCookiesFile: str('YTDLP_COOKIES_FILE', ''),
     ffmpegBin: str('FFMPEG_BIN', 'ffmpeg'),
     enableBrowserAgent: bool('ENABLE_BROWSER_AGENT', false),
     maxUsdPerLink: num('MAX_USD_PER_LINK', 0.75),

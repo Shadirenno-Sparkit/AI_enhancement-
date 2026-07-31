@@ -48,6 +48,14 @@ export async function createHarness(env: Record<string, string> = {}): Promise<H
     VISION_PROVIDER: 'stub',
     NOTIFY_CHANNELS: 'log',
     ENABLE_BROWSER_AGENT: 'false',
+    // Point the external binaries at names that cannot exist, so the suite
+    // stays hermetic and fast on machines where yt-dlp/ffmpeg *are* installed.
+    // Without this the fetcher shells out to the network for every fixture URL
+    // and the suite goes from ~17s to ~70s of failed downloads.
+    YTDLP_BIN: 'aiapp-no-such-binary',
+    FFMPEG_BIN: 'aiapp-no-such-binary',
+    YTDLP_COOKIES_FROM_BROWSER: '',
+    YTDLP_COOKIES_FILE: '',
     // Off by default so a stray quiet-hours window cannot make a notification
     // test flaky depending on when it runs.
     QUIET_HOURS_START: '0',

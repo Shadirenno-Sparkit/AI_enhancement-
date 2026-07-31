@@ -54,9 +54,18 @@ const YTDLP_TIMEOUT_MS = 120_000;
  * captions → audio for ASR → frames for OCR → rendered DOM. Every step is
  * optional; whatever succeeds is merged downstream by the normalizer.
  *
- * ToS posture: this only requests representations the platform serves to a
- * signed-out user, and never attempts to defeat a paywall, DRM, private-account
- * gate or rate limit (BRD §13, spec §6.5).
+ * ToS posture: by default this only requests representations the platform serves
+ * to a signed-out user, and never attempts to defeat a paywall, DRM or rate
+ * limit (BRD §13, spec §6.5).
+ *
+ * Instagram is the exception that forces a choice. It now returns an empty
+ * media response to signed-out clients for almost every Reel, so the signed-out
+ * path cannot see even public posts. Setting YTDLP_COOKIES_FROM_BROWSER lifts
+ * the operator's own session cookies so the fetcher sees exactly what that
+ * person already sees when logged in. That is a deliberate posture change and
+ * worth understanding: it is your account making the request, subject to the
+ * platform's terms for your account, and automated access may put it at risk.
+ * It is left off by default for that reason.
  */
 export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
   await fs.mkdir(options.workDir, { recursive: true });
@@ -79,6 +88,7 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
 
   // Steps 1–3 — yt-dlp handles subtitles, auto-captions and audio in one tool
   // and is the cleanest reliable caption path today (spec §6.2 Step 1).
+  let videoPath: string | null = null;
   if (await hasBinary(config().ytdlpBin)) {
     const yt = await runYtDlp(options);
     if (yt) {
@@ -88,24 +98,42 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
       result.durationSec = yt.durationSec ?? result.durationSec;
       result.subtitleFiles.push(...yt.subtitleFiles);
       if (yt.audioPath) result.audioPath = yt.audioPath;
+      videoPath = yt.videoPath ?? null;
       if (yt.subtitleFiles.length > 0) result.methods.push('yt-dlp:subtitles');
       if (yt.audioPath) result.methods.push('yt-dlp:audio');
+      if (videoPath) result.methods.push('yt-dlp:video');
       if (yt.inaccessible) {
         result.inaccessible = true;
         result.inaccessibleReason = yt.inaccessibleReason;
       }
     }
   } else {
-    log.debug('yt-dlp not on PATH — using metadata and page-text paths only');
+    log.warn('yt-dlp is not on PATH — captions, audio and video frames are all unavailable', {
+      hint: 'brew install yt-dlp ffmpeg',
+    });
   }
 
-  // Step 4 — frames for OCR. With ffmpeg present we sample the video; otherwise
-  // the thumbnail and any carousel images already collected stand in.
-  if (options.needFrames && result.audioPath === undefined && result.imagePaths.length === 0) {
-    const frames = await sampleFrames(options.workDir, path.join(options.workDir, 'video.mp4'));
+  // Step 4 — frames for OCR.
+  //
+  // On short-form video the advice is very often written on the screen rather
+  // than spoken, so this runs whenever a video was downloaded — not only when
+  // every other path came up empty. Previously it looked for a `video.mp4` that
+  // nothing ever wrote, and was gated behind "no thumbnail and no audio", so it
+  // could never fire.
+  if (options.needFrames && videoPath) {
+    const frames = await sampleFrames(options.workDir, videoPath);
     if (frames.length > 0) {
       result.imagePaths.push(...frames);
       result.methods.push('ffmpeg:frames');
+    }
+  }
+
+  // Take the audio off the file we already have rather than downloading twice.
+  if (options.needAudio && !result.audioPath && videoPath && result.subtitleFiles.length === 0) {
+    const audio = await extractAudio(videoPath, options.workDir);
+    if (audio) {
+      result.audioPath = audio;
+      result.methods.push('ffmpeg:audio');
     }
   }
 
@@ -256,13 +284,30 @@ interface YtDlpResult {
   durationSec?: number | null;
   subtitleFiles: { filePath: string; language: string; auto: boolean }[];
   audioPath?: string | null;
+  /** The downloaded video, when frames are needed. Frames are sampled from this. */
+  videoPath?: string | null;
   inaccessible?: boolean;
   inaccessibleReason?: string | null;
+}
+
+/**
+ * Cookie flags for yt-dlp, empty unless the operator opted in.
+ *
+ * Without these Instagram answers every Reel with an empty media response, so
+ * for that platform this is the difference between the whole pipeline working
+ * and returning "nothing to act on".
+ */
+function cookieArgs(): string[] {
+  const cfg = config();
+  if (cfg.ytdlpCookiesFile) return ['--cookies', cfg.ytdlpCookiesFile];
+  if (cfg.ytdlpCookiesFromBrowser) return ['--cookies-from-browser', cfg.ytdlpCookiesFromBrowser];
+  return [];
 }
 
 async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
   const cfg = config();
   const out: YtDlpResult = { subtitleFiles: [] };
+  const cookies = cookieArgs();
 
   // Pass 1 — metadata plus subtitle tracks, no media download. This is the
   // cheap, high-fidelity path that succeeds for most YouTube links.
@@ -280,6 +325,7 @@ async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
       '--no-warnings',
       '--no-playlist',
       '--ignore-config',
+      ...cookies,
       '-o',
       path.join(options.workDir, 'media.%(ext)s'),
       options.url,
@@ -336,8 +382,44 @@ async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
   // Author-provided tracks first — they are near-perfect (spec §6.2 Step 1).
   out.subtitleFiles.sort((a, b) => Number(a.auto) - Number(b.auto));
 
-  // Pass 2 — audio only, and only when captions did not already give us text.
-  if (options.needAudio && out.subtitleFiles.length === 0 && !out.inaccessible) {
+  if (out.inaccessible) return out;
+
+  // Pass 2 — the media itself.
+  //
+  // On short-form video the advice is very often *written on the screen* rather
+  // than spoken, so frames matter as much as audio. When we need frames we pull
+  // the video once (capped at 720p to keep it small but still legible to OCR)
+  // and derive the audio from that file, rather than downloading twice.
+  const wantAudio = options.needAudio && out.subtitleFiles.length === 0;
+
+  if (options.needFrames) {
+    const videoResult = await runCommand(
+      cfg.ytdlpBin,
+      [
+        '-f',
+        'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+        '--merge-output-format',
+        'mp4',
+        '--no-warnings',
+        '--no-playlist',
+        '--ignore-config',
+      ...cookies,
+        '-o',
+        path.join(options.workDir, 'video.%(ext)s'),
+        options.url,
+      ],
+      YTDLP_TIMEOUT_MS,
+    );
+    if (videoResult.code === 0) {
+      const after = await fs.readdir(options.workDir).catch(() => [] as string[]);
+      const video = after.find((f) => f.startsWith('video.') && /\.(mp4|mkv|webm|mov)$/.test(f));
+      if (video) out.videoPath = path.join(options.workDir, video);
+    } else {
+      log.debug('yt-dlp video pass did not succeed', { stderr: videoResult.stderr.slice(0, 300) });
+    }
+  }
+
+  if (wantAudio && !out.videoPath) {
     const audioResult = await runCommand(
       cfg.ytdlpBin,
       [
@@ -349,6 +431,7 @@ async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
         '--no-warnings',
         '--no-playlist',
         '--ignore-config',
+      ...cookies,
         '-o',
         path.join(options.workDir, 'audio.%(ext)s'),
         options.url,
@@ -363,6 +446,18 @@ async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
   }
 
   return out;
+}
+
+/** Pulls an mp3 out of an already-downloaded video, so we never fetch twice. */
+async function extractAudio(videoPath: string, workDir: string): Promise<string | null> {
+  if (!(await hasBinary(config().ffmpegBin))) return null;
+  const target = path.join(workDir, 'audio.mp3');
+  const result = await runCommand(
+    config().ffmpegBin,
+    ['-y', '-i', videoPath, '-vn', '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1', target],
+    120_000,
+  );
+  return result.code === 0 && (await exists(target)) ? target : null;
 }
 
 // ─── Frames ──────────────────────────────────────────────────────────────────
