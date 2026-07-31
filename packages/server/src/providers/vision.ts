@@ -50,9 +50,12 @@ const MEDIA_TYPES: Record<string, LlmImage['mediaType']> = {
  * engine reads as disconnected words — the model preserves reading order across
  * stylized layouts and tells us when a frame carries no text at all.
  */
-class ClaudeVisionProvider implements VisionProvider {
-  readonly name = 'claude';
+class ModelVisionProvider implements VisionProvider {
   readonly live = true;
+  /** Reports whichever model actually served the read, for provenance. */
+  get name(): string {
+    return llm().name;
+  }
 
   async read(frames: VisionFrame[]): Promise<{ results: VisionReadResult[]; usd: number }> {
     const results: VisionReadResult[] = [];
@@ -163,11 +166,23 @@ let cached: VisionProvider | null = null;
 export function vision(): VisionProvider {
   if (cached) return cached;
   const cfg = config();
-  if (cfg.visionProvider === 'claude' && cfg.anthropicApiKey) cached = new ClaudeVisionProvider();
+  // Any multimodal model reads frames the same way, so this follows whichever
+  // LLM is configured rather than being hard-wired to one vendor. 'claude' and
+  // 'openai' are kept as spellings so existing .env files keep working.
+  const wantsModel = ['claude', 'openai', 'model'].includes(cfg.visionProvider);
+
+  if (wantsModel && llm().live) cached = new ModelVisionProvider();
   else if (cfg.visionProvider === 'tesseract') cached = new TesseractProvider();
   else cached = new StubVisionProvider();
 
-  if (!cached.live) log.warn('vision/OCR is not configured — on-screen text will not be read');
+  if (!cached.live) {
+    log.warn('vision/OCR is not configured — on-screen text will not be read', {
+      visionProvider: cfg.visionProvider,
+      hint: wantsModel
+        ? 'set ANTHROPIC_API_KEY or OPENAI_API_KEY, or use VISION_PROVIDER=tesseract'
+        : 'set VISION_PROVIDER to claude | openai | tesseract',
+    });
+  }
   return cached;
 }
 

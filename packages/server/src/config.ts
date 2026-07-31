@@ -70,6 +70,14 @@ export interface Config {
   whisperModel: string;
   visionProvider: string;
   tesseractBin: string;
+  /** 'auto' | 'claude' | 'openai' | 'offline'. */
+  llmProvider: string;
+  openaiModel: string;
+  openaiFastModel: string;
+  /** Overridable so Azure OpenAI and OpenAI-compatible gateways work too. */
+  openaiBaseUrl: string;
+  openaiInputUsdPerMTok: number;
+  openaiOutputUsdPerMTok: number;
   ytdlpBin: string;
   /** Browser to lift cookies from, e.g. "chrome" | "safari" | "firefox". */
   ytdlpCookiesFromBrowser: string;
@@ -127,6 +135,16 @@ export function loadConfig(): Config {
     anthropicApiKey: str('ANTHROPIC_API_KEY', ''),
     anthropicModel: str('ANTHROPIC_MODEL', 'claude-opus-4-8'),
     anthropicFastModel: str('ANTHROPIC_FAST_MODEL', 'claude-haiku-4-5'),
+    // 'auto' picks whichever key is present (Anthropic wins if both are set).
+    llmProvider: str('LLM_PROVIDER', 'auto'),
+    // Deliberately overridable and not pinned in code: a wrong model ID here is
+    // the single most expensive mistake in this file, because a 404 degrades
+    // silently to the offline analyzer. Set it to a model your account has.
+    openaiModel: str('OPENAI_MODEL', 'gpt-4o'),
+    openaiFastModel: str('OPENAI_FAST_MODEL', 'gpt-4o-mini'),
+    openaiBaseUrl: str('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+    openaiInputUsdPerMTok: num('OPENAI_INPUT_USD_PER_MTOK', 2.5),
+    openaiOutputUsdPerMTok: num('OPENAI_OUTPUT_USD_PER_MTOK', 10),
     asrProvider: str('ASR_PROVIDER', 'stub'),
     openaiApiKey: str('OPENAI_API_KEY', ''),
     assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),

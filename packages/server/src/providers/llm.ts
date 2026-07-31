@@ -4,6 +4,8 @@ import { createLogger, errorMessage } from '../util/logger.js';
 
 const log = createLogger('llm');
 
+export type LlmProviderName = 'claude' | 'openai' | 'offline';
+
 export interface LlmUsage {
   inputTokens: number;
   outputTokens: number;
@@ -14,7 +16,7 @@ export interface LlmResult<T> {
   value: T;
   usage: LlmUsage;
   /** Which provider actually served the call — surfaced for source transparency. */
-  provider: 'claude' | 'offline';
+  provider: LlmProviderName;
 }
 
 export interface LlmImage {
@@ -101,7 +103,7 @@ export interface AgentResult {
 }
 
 export interface LlmProvider {
-  readonly name: 'claude' | 'offline';
+  readonly name: LlmProviderName;
   /** True when calls reach a real model; false for the deterministic analyzer. */
   readonly live: boolean;
   complete(request: LlmRequest): Promise<LlmResult<string>>;
@@ -281,6 +283,244 @@ class ClaudeProvider implements LlmProvider {
   }
 }
 
+// ─── OpenAI ──────────────────────────────────────────────────────────────────
+
+/** The subset of the Chat Completions wire format this provider relies on. */
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | { type: string; text?: string; image_url?: { url: string } }[] | null;
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+}
+
+interface ChatResponse {
+  choices?: {
+    message?: ChatMessage;
+    finish_reason?: string;
+  }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  error?: { message?: string; code?: string; type?: string };
+}
+
+/**
+ * OpenAI (and OpenAI-compatible) provider.
+ *
+ * Written against the HTTP API with `fetch` rather than the SDK, matching how
+ * `providers/asr.ts` already talks to Whisper — one less dependency, and it
+ * works unchanged against Azure OpenAI or any compatible gateway via
+ * OPENAI_BASE_URL.
+ *
+ * Two shape differences from Anthropic matter and are handled below:
+ *   - tool arguments arrive as a JSON *string* that has to be parsed, and can
+ *     be malformed;
+ *   - each tool result is its own `role: "tool"` message keyed by
+ *     `tool_call_id`, rather than all results sharing one user turn.
+ */
+class GptProvider implements LlmProvider {
+  readonly name = 'openai' as const;
+  readonly live = true;
+
+  constructor(private apiKey: string) {}
+
+  private price(inputTokens: number, outputTokens: number): number {
+    const cfg = config();
+    return (
+      (inputTokens / 1_000_000) * cfg.openaiInputUsdPerMTok +
+      (outputTokens / 1_000_000) * cfg.openaiOutputUsdPerMTok
+    );
+  }
+
+  /**
+   * One Chat Completions call.
+   *
+   * Newer models require `max_completion_tokens` while older ones only accept
+   * `max_tokens`, and which is which keeps moving. Rather than pin a guess,
+   * this sends the modern field and retries once on the specific 400 that says
+   * otherwise.
+   */
+  private async post(body: Record<string, unknown>, maxTokens: number): Promise<ChatResponse> {
+    const cfg = config();
+    const send = async (tokenField: 'max_completion_tokens' | 'max_tokens'): Promise<Response> =>
+      fetch(`${cfg.openaiBaseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, [tokenField]: maxTokens }),
+        signal: AbortSignal.timeout(120_000),
+      });
+
+    let response = await send('max_completion_tokens');
+    if (response.status === 400) {
+      const text = await response.text();
+      if (/max_completion_tokens|max_tokens/i.test(text)) {
+        response = await send('max_tokens');
+      } else {
+        throw new Error(describeOpenAiError(response.status, text));
+      }
+    }
+
+    if (!response.ok) {
+      // Loud and specific. A silently-swallowed 404 on a wrong model ID is
+      // exactly how this app previously appeared "live" while every call fell
+      // back to the offline analyzer.
+      throw new Error(describeOpenAiError(response.status, await response.text()));
+    }
+    return (await response.json()) as ChatResponse;
+  }
+
+  async complete(request: LlmRequest): Promise<LlmResult<string>> {
+    const cfg = config();
+    const model = request.fast ? cfg.openaiFastModel : cfg.openaiModel;
+
+    // Vision: images ride along as data URLs in the user turn.
+    const content: NonNullable<ChatMessage['content']> = [];
+    for (const image of request.images ?? []) {
+      content.push({ type: 'image_url', image_url: { url: `data:${image.mediaType};base64,${image.data}` } });
+    }
+    content.push({ type: 'text', text: request.prompt });
+
+    const data = await this.post(
+      {
+        model,
+        messages: [
+          { role: 'system', content: request.system },
+          { role: 'user', content },
+        ],
+      },
+      request.maxTokens ?? 4096,
+    );
+
+    const message = data.choices?.[0]?.message;
+    const text = typeof message?.content === 'string' ? message.content : '';
+    const inputTokens = data.usage?.prompt_tokens ?? 0;
+    const outputTokens = data.usage?.completion_tokens ?? 0;
+
+    return {
+      value: text,
+      provider: 'openai',
+      usage: { inputTokens, outputTokens, usd: this.price(inputTokens, outputTokens) },
+    };
+  }
+
+  /** Same contract as the Claude loop: nothing runs until `approve` says yes. */
+  async runAgent(request: AgentRequest): Promise<AgentResult> {
+    const cfg = config();
+    const model = cfg.openaiModel;
+    const maxIterations = request.maxIterations ?? 12;
+
+    const toolsByName = new Map(request.tools.map((tool) => [tool.name, tool]));
+    const toolParams = request.tools.map((tool) => ({
+      type: 'function' as const,
+      function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+    }));
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: request.system },
+      { role: 'user', content: request.prompt },
+    ];
+    const calls: AgentResult['calls'] = [];
+    const usage: LlmUsage = { inputTokens: 0, outputTokens: 0, usd: 0 };
+    let text = '';
+    let exhausted = true;
+
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      const data = await this.post({ model, messages, tools: toolParams }, request.maxTokens ?? 8192);
+
+      const inputTokens = data.usage?.prompt_tokens ?? 0;
+      const outputTokens = data.usage?.completion_tokens ?? 0;
+      usage.inputTokens += inputTokens;
+      usage.outputTokens += outputTokens;
+      usage.usd += this.price(inputTokens, outputTokens);
+
+      const message = data.choices?.[0]?.message;
+      if (!message) {
+        exhausted = false;
+        break;
+      }
+      if (typeof message.content === 'string' && message.content.trim()) text = message.content.trim();
+
+      const toolCalls = message.tool_calls ?? [];
+      if (toolCalls.length === 0) {
+        exhausted = false;
+        break;
+      }
+
+      // The assistant turn must go back verbatim so each tool_call_id resolves.
+      messages.push(message);
+
+      for (const toolCall of toolCalls) {
+        // Arguments are a JSON string, and a model can emit a malformed one.
+        // Treat that as a tool error the model can recover from, not a crash.
+        let input: Record<string, unknown> = {};
+        let parseError: string | null = null;
+        try {
+          input = toolCall.function.arguments ? (JSON.parse(toolCall.function.arguments) as Record<string, unknown>) : {};
+        } catch {
+          parseError = `Arguments for ${toolCall.function.name} were not valid JSON. Send them again as a JSON object.`;
+        }
+
+        const call: ToolCall = { id: toolCall.id, name: toolCall.function.name, input };
+
+        if (parseError) {
+          calls.push({ call, approved: false, result: parseError, isError: true });
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: parseError });
+          continue;
+        }
+
+        const decision = request.approve ? await request.approve(call) : { allow: true };
+        if (!decision.allow) {
+          const denial = decision.reason ?? 'That action was not approved.';
+          calls.push({ call, approved: false, result: denial, isError: true });
+          request.onToolResult?.(call, { content: denial, isError: true }, false);
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: denial });
+          continue;
+        }
+
+        const tool = toolsByName.get(call.name);
+        if (!tool) {
+          const missing = `No such tool: ${call.name}`;
+          calls.push({ call, approved: true, result: missing, isError: true });
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: missing });
+          continue;
+        }
+
+        try {
+          const outcome = await tool.run(call.input);
+          calls.push({ call, approved: true, result: outcome.content, isError: outcome.isError === true });
+          request.onToolResult?.(call, outcome, true);
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: outcome.content });
+        } catch (err) {
+          const message = errorMessage(err);
+          calls.push({ call, approved: true, result: message, isError: true });
+          request.onToolResult?.(call, { content: message, isError: true }, true);
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: message });
+        }
+      }
+    }
+
+    return { text, calls, usage, exhausted };
+  }
+}
+
+/** Turns an OpenAI error body into something worth putting in a log line. */
+function describeOpenAiError(status: number, body: string): string {
+  let detail = body.slice(0, 400);
+  try {
+    const parsed = JSON.parse(body) as ChatResponse;
+    if (parsed.error?.message) detail = parsed.error.message;
+  } catch {
+    // Non-JSON body; the raw text is the best we have.
+  }
+  if (status === 401) return `OpenAI rejected the API key (401). ${detail}`;
+  if (status === 404) {
+    return (
+      `OpenAI returned 404 for model "${config().openaiModel}". Set OPENAI_MODEL in .env to a model ` +
+      `your account can access. ${detail}`
+    );
+  }
+  if (status === 429) return `OpenAI rate limit or quota exceeded (429). ${detail}`;
+  return `OpenAI request failed (${status}). ${detail}`;
+}
+
 /**
  * Deterministic offline provider.
  *
@@ -315,14 +555,32 @@ class OfflineProvider implements LlmProvider {
 
 let cached: LlmProvider | null = null;
 
+/**
+ * Picks the provider from LLM_PROVIDER, defaulting to whichever key is present.
+ *
+ * When both keys are set, Anthropic wins — pin LLM_PROVIDER=openai to override.
+ */
 export function llm(): LlmProvider {
   if (cached) return cached;
-  const key = config().anthropicApiKey;
-  if (key) {
-    log.info('using Claude for analysis and implementation', { model: config().anthropicModel });
-    cached = new ClaudeProvider(key);
+  const cfg = config();
+  const choice = cfg.llmProvider.trim().toLowerCase();
+
+  const useClaude = choice === 'claude' || (choice === 'auto' && Boolean(cfg.anthropicApiKey));
+  const useOpenAi = choice === 'openai' || (choice === 'auto' && !cfg.anthropicApiKey && Boolean(cfg.openaiApiKey));
+
+  if (useClaude && cfg.anthropicApiKey) {
+    log.info('using Claude for analysis and implementation', { model: cfg.anthropicModel });
+    cached = new ClaudeProvider(cfg.anthropicApiKey);
+  } else if (useOpenAi && cfg.openaiApiKey) {
+    log.info('using OpenAI for analysis and implementation', {
+      model: cfg.openaiModel,
+      baseUrl: cfg.openaiBaseUrl,
+    });
+    cached = new GptProvider(cfg.openaiApiKey);
   } else {
-    log.warn('ANTHROPIC_API_KEY not set — using the offline deterministic analyzer');
+    if (choice === 'claude') log.error('LLM_PROVIDER=claude but ANTHROPIC_API_KEY is empty');
+    else if (choice === 'openai') log.error('LLM_PROVIDER=openai but OPENAI_API_KEY is empty');
+    else log.warn('no model key set (ANTHROPIC_API_KEY / OPENAI_API_KEY) — using the offline analyzer');
     cached = new OfflineProvider();
   }
   return cached;

@@ -16,7 +16,7 @@ import {
 } from '@aiapp/shared';
 import { findMissingPrerequisites } from '../repo/connectors.js';
 import { previouslyApprovedItems } from '../repo/specs.js';
-import { completeJson, llm } from '../providers/llm.js';
+import { completeJson, llm, type LlmProviderName } from '../providers/llm.js';
 import { createLogger } from '../util/logger.js';
 import {
   effortFor,
@@ -40,7 +40,7 @@ export interface AnalysisResult {
   noActionableItems: boolean;
   usage: { modelTokens: number; usd: number };
   /** Which analyzer produced the result — shown in the UI for transparency. */
-  analyzer: 'claude' | 'offline';
+  analyzer: LlmProviderName;
 }
 
 export interface AnalysisInput {
@@ -200,7 +200,7 @@ async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | 
       modelTokens: response.usage.inputTokens + response.usage.outputTokens,
       usd: response.usage.usd,
     },
-    analyzer: 'claude',
+    analyzer: llm().name,
   };
 }
 
@@ -424,7 +424,7 @@ function emptyResult(input: AnalysisInput, summary: string): AnalysisResult {
     items: [],
     noActionableItems: true,
     usage: { modelTokens: 0, usd: 0 },
-    analyzer: llm().live ? 'claude' : 'offline',
+    analyzer: llm().name,
   };
 }
 
