@@ -7,6 +7,7 @@ import { getUserById, recordUsage } from '../repo/users.js';
 import { writeDecisions, writePlan, writeRunLog } from '../artifacts/fileManager.js';
 import { createLogger, errorMessage } from '../util/logger.js';
 import { HANDLERS, undoItem, type HandlerContext } from './handlers.js';
+import { runItemAgentically } from './agentic.js';
 import { ScopeViolation, evaluateAutonomy, sandboxFor } from './guardrails.js';
 
 const log = createLogger('engine');
@@ -188,8 +189,19 @@ async function runItem(input: {
   try {
     if (!job.folderName) throw new Error('this link has no artifact folder yet');
 
-    const handler = HANDLERS[item.type];
-    const outcome = await handler(context);
+    // Prefer the model when this item type has a toolset and a key is
+    // configured: it can inspect what already exists before writing, where a
+    // handler can only perform its one fixed action. Falls back to the handler
+    // when no model is reachable or the run produced nothing, so behaviour
+    // degrades rather than fails.
+    const agentic = await runItemAgentically(context).catch((err) => {
+      log.warn('agentic implementation failed — falling back to the handler', {
+        itemId: item.itemId,
+        error: errorMessage(err),
+      });
+      return null;
+    });
+    const outcome = agentic ?? (await HANDLERS[item.type](context));
 
     return {
       itemId: item.itemId,

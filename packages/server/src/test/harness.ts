@@ -139,6 +139,76 @@ export function stubLlm(response: string): LlmProvider {
         usage: { inputTokens: 100, outputTokens: 200, usd: 0.001 },
       };
     },
+    async runAgent() {
+      return { text: response, calls: [], usage: { inputTokens: 0, outputTokens: 0, usd: 0 }, exhausted: false };
+    },
+  };
+  setLlmForTesting(provider);
+  return provider;
+}
+
+/**
+ * A provider that "decides" to make a scripted sequence of tool calls.
+ *
+ * This exists so the agentic engine can be tested without a model key: it walks
+ * the plan through the same approve → run → record path the real loop uses, so
+ * the approval gate and scope containment are genuinely exercised rather than
+ * mocked away.
+ */
+export function stubAgentLlm(
+  plan: { name: string; input?: Record<string, unknown> }[],
+  closing = 'Done.',
+): LlmProvider {
+  const provider: LlmProvider = {
+    name: 'claude',
+    live: true,
+    async complete() {
+      return {
+        value: '',
+        provider: 'claude' as const,
+        usage: { inputTokens: 0, outputTokens: 0, usd: 0 },
+      };
+    },
+    async runAgent(request) {
+      const byName = new Map(request.tools.map((tool) => [tool.name, tool]));
+      const calls: Awaited<ReturnType<LlmProvider['runAgent']>>['calls'] = [];
+
+      for (const [index, step] of plan.entries()) {
+        const call = { id: `toolu_stub_${index}`, name: step.name, input: step.input ?? {} };
+
+        const decision = request.approve ? await request.approve(call) : { allow: true };
+        if (!decision.allow) {
+          const denial = decision.reason ?? 'That action was not approved.';
+          calls.push({ call, approved: false, result: denial, isError: true });
+          request.onToolResult?.(call, { content: denial, isError: true }, false);
+          continue;
+        }
+
+        const tool = byName.get(step.name);
+        if (!tool) {
+          const missing = `No such tool: ${step.name}`;
+          calls.push({ call, approved: true, result: missing, isError: true });
+          continue;
+        }
+
+        try {
+          const outcome = await tool.run(call.input);
+          calls.push({ call, approved: true, result: outcome.content, isError: outcome.isError === true });
+          request.onToolResult?.(call, outcome, true);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          calls.push({ call, approved: true, result: message, isError: true });
+          request.onToolResult?.(call, { content: message, isError: true }, true);
+        }
+      }
+
+      return {
+        text: closing,
+        calls,
+        usage: { inputTokens: 500, outputTokens: 300, usd: 0.005 },
+        exhausted: false,
+      };
+    },
   };
   setLlmForTesting(provider);
   return provider;
