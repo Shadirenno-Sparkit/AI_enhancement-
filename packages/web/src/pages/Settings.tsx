@@ -380,8 +380,11 @@ export function Settings({
 
       {!capabilities?.analysis.live ? (
         <Notice kind="info">
-          Running without a model key. Links are still captured, extracted and specced by the built-in rule-based
-          analyzer — add <code>ANTHROPIC_API_KEY</code> to <code>.env</code> and restart for full-quality analysis.
+          <strong>Running without a model key.</strong> Links are still captured, extracted and specced by the
+          built-in rule-based analyzer, but nothing reaches a model — so on-screen text is not read and items
+          are matched by keyword rather than understood. Add <code>OPENAI_API_KEY</code> (or{' '}
+          <code>ANTHROPIC_API_KEY</code>) to <code>.env</code> and restart the server; config is read at boot,
+          so a running server will not pick it up.
         </Notice>
       ) : null}
 
