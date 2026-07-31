@@ -5,6 +5,7 @@ import { listDecisions, getSpecUnscoped } from '../repo/specs.js';
 import { getRunUnscoped, updateRun } from '../repo/runs.js';
 import { getUserById, recordUsage } from '../repo/users.js';
 import { writeDecisions, writePlan, writeRunLog } from '../artifacts/fileManager.js';
+import { rebuildIndex } from '../orchestrator/index-writer.js';
 import { createLogger, errorMessage } from '../util/logger.js';
 import { HANDLERS, undoItem, type HandlerContext } from './handlers.js';
 import { ScopeViolation, evaluateAutonomy, sandboxFor } from './guardrails.js';
@@ -140,6 +141,14 @@ export async function executeRun(runId: string): Promise<void> {
     } catch (err) {
       log.error('could not write run artifacts', { runId, error: errorMessage(err) });
     }
+  }
+
+  // The index carries each link's status, so it goes stale the moment a run
+  // finishes unless it is rewritten here — it is the last thing to change.
+  try {
+    await rebuildIndex(user.userId);
+  } catch (err) {
+    log.error('could not rebuild the index', { runId, error: errorMessage(err) });
   }
 }
 
