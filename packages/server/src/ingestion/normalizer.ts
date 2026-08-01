@@ -1,4 +1,4 @@
-import type { InsightSegment, InsightSource, Provenance } from '@aiapp/shared';
+import type { InsightSegment, InsightSource, Platform, Provenance } from '@aiapp/shared';
 import { cleanCaptionText } from './subtitles.js';
 
 /** Confidence below this, or too little text, flags the result. Spec §6.5. */
@@ -29,6 +29,8 @@ export interface NormalizedContent {
 export function normalize(input: {
   segments: InsightSegment[];
   postDescription?: string | null;
+  /** Platform matters because Instagram/TikTok captions alone rarely contain the video. */
+  platform?: Platform;
 }): NormalizedContent {
   const cleaned = input.segments
     .map((segment) => ({ ...segment, text: cleanCaptionText(segment.text) }))
@@ -63,10 +65,27 @@ export function normalize(input: {
   const VERBATIM: Provenance[] = ['post_description', 'author_caption', 'user_note'];
   const allVerbatim = ordered.length > 0 && ordered.every((segment) => VERBATIM.includes(segment.provenance));
 
+  // A post caption can be perfectly transcribed while still being an incomplete
+  // representation of the post. Instagram and TikTok commonly put the actual
+  // advice in spoken audio or on-screen text. Treat caption-only extraction as
+  // low confidence so the UI exposes "Re-run stronger" instead of presenting a
+  // confident-looking false negative.
+  const MEDIA_PROVENANCES: Provenance[] = [
+    'author_caption',
+    'auto_caption',
+    'asr_whisper',
+    'asr_hosted',
+    'ocr_multimodal',
+    'ocr_tesseract',
+  ];
+  const platformMayHideAdvice = input.platform === 'instagram' || input.platform === 'tiktok';
+  const mediaContentPresent = ordered.some((segment) => MEDIA_PROVENANCES.includes(segment.provenance));
+
   const lowConfidence =
     ordered.length === 0 ||
     overallConfidence < LOW_CONFIDENCE_THRESHOLD ||
-    (totalChars < THIN_TEXT_CHARS && !allVerbatim);
+    (totalChars < THIN_TEXT_CHARS && !allVerbatim) ||
+    (platformMayHideAdvice && !mediaContentPresent);
 
   return {
     segments: ordered,

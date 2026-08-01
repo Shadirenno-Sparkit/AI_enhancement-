@@ -117,6 +117,25 @@ Pin the file to the top.
 });
 
 describe('content normalization', () => {
+  it('flags Instagram caption-only extraction as incomplete', () => {
+    const result = normalize({
+      platform: 'instagram',
+      segments: [
+        {
+          order: 0,
+          text: 'A short caption that does not contain the advice from the post.',
+          provenance: 'post_description',
+          confidence: 1,
+          startSec: null,
+          frameIndex: null,
+        },
+      ],
+    });
+
+    expect(result.overallConfidence).toBe(1);
+    expect(result.lowConfidence).toBe(true);
+  });
+
   it('deduplicates the same tip arriving from caption, audio and OCR', () => {
     // The archetypal Reel: text burned into the video, spoken aloud, and
     // repeated in the caption. Without dedupe the analyzer sees three tips.

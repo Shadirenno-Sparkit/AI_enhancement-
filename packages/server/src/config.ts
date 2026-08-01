@@ -145,13 +145,15 @@ export function loadConfig(): Config {
     openaiBaseUrl: str('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     openaiInputUsdPerMTok: num('OPENAI_INPUT_USD_PER_MTOK', 2.5),
     openaiOutputUsdPerMTok: num('OPENAI_OUTPUT_USD_PER_MTOK', 10),
-    asrProvider: str('ASR_PROVIDER', 'stub'),
+    // If a model key is present, make the media path useful by default too.
+    // Explicit provider settings still override this for local/third-party ASR.
+    asrProvider: str('ASR_PROVIDER', 'openai'),
     openaiApiKey: str('OPENAI_API_KEY', ''),
     assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
     deepgramApiKey: str('DEEPGRAM_API_KEY', ''),
     whisperBin: str('WHISPER_BIN', 'whisper'),
     whisperModel: str('WHISPER_MODEL', 'large-v3'),
-    visionProvider: str('VISION_PROVIDER', 'stub'),
+    visionProvider: str('VISION_PROVIDER', 'openai'),
     tesseractBin: str('TESSERACT_BIN', 'tesseract'),
     ytdlpBin: str('YTDLP_BIN', 'yt-dlp'),
     // Instagram (and increasingly TikTok) return an empty media response to

@@ -39,6 +39,15 @@ const PROVENANCE_LABELS: Record<Provenance, string> = {
   user_note: 'your note',
 };
 
+const CONTENT_PROVENANCES: Provenance[] = [
+  'author_caption',
+  'auto_caption',
+  'asr_whisper',
+  'asr_hosted',
+  'ocr_multimodal',
+  'ocr_tesseract',
+];
+
 const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'];
 
 /** The three outcomes an item can have, in escalating order of commitment. */
@@ -167,6 +176,10 @@ function SpecReview({
   toast: (message: string) => void;
 }): JSX.Element {
   const { spec, extraction, run } = view;
+  const needsStrongerExtraction =
+    (spec.noActionableItems || spec.items.length === 0) &&
+    Boolean(extraction) &&
+    !extraction!.methodsUsed.some((method) => CONTENT_PROVENANCES.includes(method));
 
   // Local selection state, seeded from any decision already recorded.
   const [selection, setSelection] = useState<Record<string, DecisionChoice | null>>({});
@@ -250,7 +263,27 @@ function SpecReview({
 
       {spec.noActionableItems || spec.items.length === 0 ? (
         <Notice kind="info">
-          No actionable items were found in this post — nothing was invented to fill the gap.
+          {needsStrongerExtraction ? (
+            <>
+              <strong>Only the post caption was retrieved.</strong> The video or carousel content may contain the
+              missing advice. Configure speech-to-text/vision and Instagram access, then{' '}
+              {view.job ? (
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={async () => {
+                    await api.rerun(view.job!.jobId);
+                    toast('Re-running with the heavier extraction path');
+                    onChanged();
+                  }}
+                >
+                  re-run stronger
+                </button>
+              ) : null}
+              .
+            </>
+          ) : (
+            'No actionable items were found in this post — nothing was invented to fill the gap.'
+          )}
         </Notice>
       ) : (
         <>

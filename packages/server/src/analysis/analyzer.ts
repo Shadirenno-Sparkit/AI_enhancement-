@@ -252,8 +252,11 @@ function analyzeOffline(input: AnalysisInput): AnalysisResult {
   if (tips.length === 0) {
     return emptyResult(
       input,
-      'No actionable AI advice was found in this post. The extracted content reads as commentary or ' +
-        'entertainment rather than a tip you could set up, so nothing was proposed.',
+      input.lowConfidence
+        ? 'The available extraction was incomplete, so no reliable actionable items could be proposed. ' +
+          'The advice may be in the video audio or on-screen text; configure media extraction and re-run this link.'
+        : 'No actionable AI advice was found in this post. The extracted content reads as commentary or ' +
+          'entertainment rather than a tip you could set up, so nothing was proposed.',
     );
   }
 

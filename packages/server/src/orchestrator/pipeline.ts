@@ -163,6 +163,7 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   const normalized = normalize({
     segments: extraction.segments,
     postDescription: extraction.postDescription,
+    platform,
   });
 
   const source = saveInsightSource({
