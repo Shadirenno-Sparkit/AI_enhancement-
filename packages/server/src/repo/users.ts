@@ -24,6 +24,7 @@ export function defaultPreferences(): UserPreferences {
     desktopFolder: null,
     weeklyDigest: true,
     dryRunFirst: false,
+    personalContext: null,
   };
 }
 

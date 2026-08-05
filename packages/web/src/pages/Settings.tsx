@@ -143,6 +143,37 @@ export function Settings({
         </div>
       </Group>
 
+      <Group
+        title="About your life"
+        hint="The single biggest lever on suggestion quality. Without it you get generic advice; with it, suggestions name your actual tools, places and people."
+      >
+        <div className="group__row">
+          <label className="field__label" htmlFor="personal-context">
+            Your tools, places, people and what you&rsquo;re working on
+          </label>
+          <textarea
+            id="personal-context"
+            className="textarea"
+            style={{ minHeight: 130 }}
+            defaultValue={user.preferences.personalContext ?? ''}
+            placeholder={
+              'e.g. I use Notion for planning and Apple Calendar for everything else. I work from home Tue/Thu ' +
+              'and commute to the office Mon/Wed/Fri. I cook most nights, run three mornings a week, and I am ' +
+              'trying to spend less time on my phone in the evenings. My partner and I share a grocery list.'
+            }
+            onBlur={(e) => {
+              const next = e.target.value.trim();
+              if (next !== (user.preferences.personalContext ?? '')) {
+                void update({ personalContext: next || null });
+              }
+            }}
+          />
+          <p className="faint" style={{ margin: '6px 0 0' }}>
+            Saved when you click away. Written in plain language &mdash; it goes to the model as-is.
+          </p>
+        </div>
+      </Group>
+
       <Group title="Notifications">
         <div className="group__row">
           <label className="checkbox-row" style={{ padding: 0 }}>

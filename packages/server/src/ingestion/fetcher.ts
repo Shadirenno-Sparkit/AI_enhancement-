@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Platform } from '@aiapp/shared';
 import { config } from '../config.js';
 import { createLogger, errorMessage } from '../util/logger.js';
+import { capturePage } from './browser.js';
 
 const log = createLogger('fetch');
 
@@ -27,6 +28,10 @@ export interface FetchedMedia {
   /** True when the platform refused or the content is not publicly reachable. */
   inaccessible?: boolean;
   inaccessibleReason?: string | null;
+  /** The content exists but is behind a sign-in the user could grant. */
+  needsSignIn?: boolean;
+  /** Which platform is asking, so the UI can offer the right connect button. */
+  signInHost?: string | null;
 }
 
 export interface FetchOptions {
@@ -37,6 +42,8 @@ export interface FetchOptions {
   needAudio: boolean;
   /** Skip frame sampling when on-screen text is unlikely to matter. */
   needFrames: boolean;
+  /** Playwright storageState from a completed sign-in, when the user connected this platform. */
+  storageStatePath?: string | null;
 }
 
 const USER_AGENT =
@@ -137,12 +144,42 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
     }
   }
 
-  // Step 5 — rendered DOM, last resort for JS-heavy pages.
+  // Step 5 — render the page in a real browser and photograph it.
+  //
+  // This is the universal path, not a last resort. Every extractor above is
+  // platform-specific and fails closed on anything it does not recognise;
+  // Instagram returns no OpenGraph tags at all to a signed-out fetch, so
+  // without this there is genuinely nothing to analyse. A rendered screenshot
+  // read by the vision model works the same way for a Reel, an X post, a
+  // recipe or a screenshot, with no per-platform adapter.
   if (needsBrowser(result) && config().enableBrowserAgent) {
-    const dom = await renderPageText(options.url);
-    if (dom) {
-      result.domText = dom;
-      result.methods.push('browser:dom');
+    const capture = await capturePage({
+      url: options.url,
+      workDir: options.workDir,
+      storageStatePath: options.storageStatePath ?? null,
+    });
+
+    if (capture?.loginWall) {
+      // Do not feed the model a picture of a sign-in form and call it an
+      // insight. Say plainly that this account needs connecting.
+      result.inaccessible = true;
+      result.needsSignIn = true;
+      result.signInHost = capture.loginHost ?? null;
+      result.inaccessibleReason =
+        `This post is behind a ${capture.loginHost ?? 'platform'} sign-in. ` +
+        `Connect that account and it will be processed automatically.`;
+      result.methods.push('browser:login-wall');
+    } else if (capture) {
+      if (capture.text) {
+        result.domText = capture.text;
+        result.methods.push('browser:dom');
+      }
+      if (capture.title && !result.title) result.title = capture.title;
+      if (capture.screenshots.length > 0) {
+        // Screenshots join the image set, so the existing OCR step reads them.
+        result.imagePaths.push(...capture.screenshots);
+        result.methods.push('browser:screenshots');
+      }
     }
   }
 
@@ -171,9 +208,19 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
   return result;
 }
 
+/**
+ * Whether a browser pass is still worth doing.
+ *
+ * Deliberately generous: a caption alone is rarely the whole post. The advice
+ * in a Reel is usually burned onto the image, and a long article's value is in
+ * the body rather than its og:description. We skip the browser only when we
+ * already hold real transcript text or already have video frames to read.
+ */
 function needsBrowser(result: FetchedMedia): boolean {
-  const haveText = Boolean(result.description && result.description.length > 120);
-  return !haveText && result.subtitleFiles.length === 0;
+  if (result.subtitleFiles.length > 0) return false;
+  if (result.audioPath) return false;
+  const haveFrames = result.imagePaths.some((p) => p.includes('/frames/'));
+  return !haveFrames;
 }
 
 // ─── Metadata ────────────────────────────────────────────────────────────────
@@ -486,51 +533,6 @@ async function sampleFrames(workDir: string, videoPath: string): Promise<string[
 
 // ─── Browser agent ───────────────────────────────────────────────────────────
 
-/**
- * Renders a JS-heavy page and returns its visible text (spec §6.2 Step 5).
- *
- * Playwright is an optional dependency: when it is not installed the caller
- * silently falls back to the plain HTTP path rather than failing the job.
- */
-async function renderPageText(url: string): Promise<string | null> {
-  try {
-    // Indirected through a variable so TypeScript does not require Playwright's
-    // types to be installed — it is an opt-in extra, not a dependency.
-    const specifier = 'playwright';
-    const playwright = (await import(specifier).catch(() => null)) as
-      | { chromium: { launch(opts?: unknown): Promise<BrowserLike> } }
-      | null;
-    if (!playwright) {
-      log.debug('browser agent enabled but playwright is not installed');
-      return null;
-    }
-    const browser = await playwright.chromium.launch({ headless: true });
-    try {
-      const context = await browser.newContext({ userAgent: USER_AGENT });
-      const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await page.waitForTimeout(2500);
-      const text = await page.evaluate('document.body?.innerText ?? ""');
-      return typeof text === 'string' && text.trim().length > 40 ? text.trim().slice(0, 20_000) : null;
-    } finally {
-      await browser.close();
-    }
-  } catch (err) {
-    log.warn('browser render failed', { error: errorMessage(err) });
-    return null;
-  }
-}
-
-interface BrowserLike {
-  newContext(opts?: unknown): Promise<{
-    newPage(): Promise<{
-      goto(url: string, opts?: unknown): Promise<unknown>;
-      waitForTimeout(ms: number): Promise<void>;
-      evaluate(script: string): Promise<unknown>;
-    }>;
-  }>;
-  close(): Promise<void>;
-}
 
 // ─── Low-level helpers ───────────────────────────────────────────────────────
 

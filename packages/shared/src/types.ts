@@ -361,6 +361,15 @@ export interface UserPreferences {
   desktopFolder: string | null;
   weeklyDigest: boolean;
   dryRunFirst: boolean;
+  /**
+   * Free-text description of the user's actual life: the apps and devices they
+   * use, where they spend time, who they answer to, what they are working on.
+   *
+   * This is what turns "here is a generic tip" into "here is how this fits your
+   * Tuesday". Without it the analyzer can only restate the post; with it, it can
+   * name the specific tool or moment where the advice would land.
+   */
+  personalContext: string | null;
 }
 
 export interface User {

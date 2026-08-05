@@ -43,10 +43,19 @@ export async function createHarness(env: Record<string, string> = {}): Promise<H
     DATABASE_PATH: path.join(dir, 'test.sqlite'),
     STORAGE_PATH: path.join(dir, 'storage'),
     ARTIFACT_ROOT: path.join(dir, 'artifacts'),
+    // Every provider key is blanked explicitly. The root `.env` is now really
+    // loaded (it never used to be), so without this a test run would reach the
+    // live API on the developer's own key and bill them for it.
     ANTHROPIC_API_KEY: '',
+    OPENAI_API_KEY: '',
+    ASSEMBLYAI_API_KEY: '',
+    DEEPGRAM_API_KEY: '',
+    LLM_PROVIDER: 'offline',
     ASR_PROVIDER: 'stub',
     VISION_PROVIDER: 'stub',
     NOTIFY_CHANNELS: 'log',
+    // Browser capture is on by default in the app now; tests must not launch
+    // Chromium per fixture or the suite goes from ~16s to ~110s.
     ENABLE_BROWSER_AGENT: 'false',
     // Point the external binaries at names that cannot exist, so the suite
     // stays hermetic and fast on machines where yt-dlp/ffmpeg *are* installed.

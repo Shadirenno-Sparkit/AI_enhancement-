@@ -14,7 +14,8 @@ import {
   PLATFORM_LABELS,
   slugify,
 } from '@aiapp/shared';
-import { findMissingPrerequisites } from '../repo/connectors.js';
+import { findMissingPrerequisites, listConnectors } from '../repo/connectors.js';
+import { getUserById } from '../repo/users.js';
 import { previouslyApprovedItems } from '../repo/specs.js';
 import { completeJson, llm, type LlmProviderName } from '../providers/llm.js';
 import { createLogger } from '../util/logger.js';
@@ -54,69 +55,89 @@ export interface AnalysisInput {
   overallConfidence: number;
 }
 
-const SYSTEM_PROMPT = `You analyze short-form social media content about AI tools and turn it into an implementable plan.
+const SYSTEM_PROMPT = `You turn something a person saved — a Reel, a post, an article, a screenshot, a photo —
+into a small number of concrete changes they could actually make in their own life this week.
 
-You are given the merged text of one post. Each line is tagged with its index and where it came from, e.g.
-  [3] (author captions @00:12) Set a standing instruction to keep answers short.
+You are given the extracted content of one item. Each line is tagged with its index and where it came
+from, e.g.
+  [3] (on-screen text @00:12) Batch your errands into one loop instead of five trips.
 Sources ranked by reliability: author captions > post caption > on-screen text > speech-to-text > page text.
 
-Your job:
-1. Enumerate every DISTINCT tip, trick, recommendation or hack the post actually conveys.
-2. Write a plain-English summary of what the post is telling the reader to do and why it is useful.
-3. Turn the advice into discrete, independently approvable implementation items.
+WHAT COUNTS AS ACTIONABLE
+Almost anything does. This is not limited to software or productivity. A workout tip, a recipe, a
+negotiation line, a way to structure a morning, a mental model, a phrase worth remembering, a product
+worth trying — all of it counts if a person could put it into practice. Be generous and imaginative
+about what can be turned into an action.
 
-Hard rules:
-- Ground everything in the supplied text. Never invent advice that is not there.
-- If the content carries no actionable AI advice (pure entertainment, a product ad, engagement bait),
-  return an empty items array and say so plainly in the summary. This is a correct and expected outcome.
+Only return zero items when the content genuinely carries nothing a person could act on: pure
+entertainment with no takeaway, an ad, or engagement bait. That is a real and expected outcome, but it
+should be uncommon. If you can find one honest, useful thing in it, return that one thing.
+
+MAKE IT THEIRS, NOT GENERIC
+You may be given a description of this person's actual life — their tools, their places, the people
+around them, what they are working on. When you have it, use it in every item:
+  - name the specific app, place, or person the change touches
+  - anchor it to a real moment in their week rather than "regularly"
+  - prefer a change that fits the life described over a textbook-correct one that does not
+The difference you are aiming for is between "batch your errands" and "your Thursday grocery run
+already passes the pharmacy — combine them and drop the separate Saturday trip."
+
+If you have no context about them, still be concrete, but say plainly in the summary that these are
+starting points that would sharpen once the app knows more about their setup.
+
+HARD RULES
+- Ground every item in what the content actually says. Never invent advice that is not there.
 - Do not split one idea into several items to pad the list, and do not merge genuinely separate ideas.
-- Each item must be something that can be carried out inside the user's own AI environment:
-  creating a reusable skill, setting a standing instruction, scheduling a routine, wiring a connector,
-  generating a file, downloading a referenced resource, or changing a setting.
 - Speech-to-text and OCR make mistakes. If a line is garbled, interpret it charitably or leave it out;
   never build an item on text you cannot read.
+- Two to four items is usually right. One excellent item beats four thin ones.
 
-Item types (choose the most specific that fits):
-  create_skill      a reusable routine/skill/command the user can invoke again
-  set_instruction   a standing instruction or system-prompt change
-  schedule_task     recurring or deferred work ("every morning", "each Friday")
-  connect_tool      wiring up a connector/integration the tip depends on
-  download_file     fetching a resource the post points at
-  generate_file     producing a template, checklist, prompt library or starter file
+HOW EACH ITEM GETS CARRIED OUT
+Every item is executed by this app on the person's behalf, so choose the type that matches how the
+change would actually stick:
+  create_skill      a reusable routine they can invoke again
+  set_instruction   a standing rule or default that changes how things behave from now on
+  schedule_task     recurring or time-anchored work ("every morning", "each Friday")
+  connect_tool      wiring up an integration the change depends on
+  download_file     fetching a resource the content points at
+  generate_file     producing a checklist, template, plan, recipe card or note they will actually open
   configure_setting a one-time setting or toggle change
   run_command       a command-line step (use sparingly; highest friction)
 
+When in doubt, generate_file is a good home for anything worth keeping — a plan, a checklist, a script
+to say out loud, a recipe. Write the real content, not a description of it.
+
 Return ONLY JSON matching this shape:
 {
-  "title": "short title for this post, max 8 words",
-  "summary": "2-4 sentences, plain English, second person",
+  "title": "short title for this item, max 8 words",
+  "summary": "2-4 sentences, plain English, second person, saying what this is and why it is worth their time",
   "noActionableItems": false,
   "items": [
     {
       "title": "imperative, max 12 words",
-      "type": "create_skill",
-      "why": "one or two sentences on the benefit, referencing what the post said",
-      "proposedMethod": "concretely what should be done to implement it",
-      "prerequisites": ["email connector"],
+      "type": "generate_file",
+      "why": "one or two sentences on what changes for them, referencing their life where you know it",
+      "proposedMethod": "concretely what should be done to make it real",
+      "prerequisites": ["calendar connector"],
       "effort": "low",
       "impact": "high",
       "requiresBrowser": false,
       "sourceSegments": [3, 7],
-      "parameters": { "name": "morning-inbox-summary", "body": "..." }
+      "parameters": { "filename": "thursday-errand-loop.md", "content": "..." }
     }
   ]
 }
 
 The "parameters" object is what the implementation engine consumes. Populate it richly:
   create_skill      { "name": kebab-case, "description": string, "body": full markdown of the skill }
-  set_instruction   { "instruction": the exact sentence to add }
+  set_instruction   { "instruction": the exact sentence to adopt }
   schedule_task     { "name": string, "cron": 5-field cron, "timezone": IANA zone, "description": string }
-  connect_tool      { "kind": "gmail"|"slack"|"github"|..., "steps": [string] }
+  connect_tool      { "kind": "gmail"|"slack"|"calendar"|..., "steps": [string] }
   generate_file     { "filename": "name.md", "content": full file content }
   download_file     { "url": string or null, "filename": string }
   configure_setting { "setting": string, "value": string, "steps": [string] }
   run_command       { "command": string, "explanation": string }
-Write real, usable content in these fields — a skill body or file content should be complete enough to use as-is.`;
+Write real, usable content in these fields — a file or skill body should be complete enough to use as-is.`;
 
 interface ModelResponse {
   title?: string;
@@ -161,6 +182,39 @@ export async function analyze(input: AnalysisInput): Promise<AnalysisResult> {
   return result;
 }
 
+/**
+ * The block of prompt that makes suggestions land in this person's actual week.
+ *
+ * Two sources, both already in the database: what they wrote about themselves,
+ * and which tools they have genuinely connected. Naming the connected tools
+ * matters as much as the prose — it stops the model proposing a Notion workflow
+ * to someone who has never connected Notion.
+ */
+function describeTheirLife(userId: string): string {
+  const parts: string[] = [];
+
+  const user = getUserById(userId);
+  const context = user?.preferences.personalContext?.trim();
+  if (context) {
+    parts.push(`Here is what this person has told us about their life:\n${context.slice(0, 4000)}`);
+  }
+
+  const connected = listConnectors(userId)
+    .filter((connector) => connector.configured)
+    .map((connector) => connector.label);
+  if (connected.length > 0) {
+    parts.push(`Tools they have actually connected: ${connected.join(', ')}.`);
+  }
+
+  if (parts.length === 0) {
+    return (
+      'You know nothing about this person yet. Keep the items concrete and universally doable, and note ' +
+      'in the summary that they would get sharper once the app knows their tools and routine.\n\n'
+    );
+  }
+  return `${parts.join('\n\n')}\n\nUse this. Name their specific tools, places and people where it fits.\n\n`;
+}
+
 async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | null> {
   const confidenceNote = input.lowConfidence
     ? `\n\nNOTE: this extraction is low confidence (${input.overallConfidence.toFixed(2)}). Be conservative — prefer fewer, well-supported items over speculative ones.`
@@ -169,6 +223,7 @@ async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | 
   const response = await completeJson<ModelResponse>({
     system: SYSTEM_PROMPT,
     prompt:
+      describeTheirLife(input.userId) +
       `Platform: ${PLATFORM_LABELS[input.platform]}\n` +
       `URL: ${input.url}\n` +
       (input.postTitle ? `Post title: ${input.postTitle}\n` : '') +

@@ -36,6 +36,8 @@ const preferencesSchema = z.object({
   desktopFolder: z.string().max(500).nullable().optional(),
   weeklyDigest: z.boolean().optional(),
   dryRunFirst: z.boolean().optional(),
+  // Generous cap: this is a paragraph about someone's life, not a tweet.
+  personalContext: z.string().max(4000).nullable().optional(),
 });
 
 usersRouter.patch(

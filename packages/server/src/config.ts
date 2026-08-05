@@ -1,8 +1,48 @@
-import 'dotenv/config';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { config as loadEnvFile } from 'dotenv';
 import type { TrustPosture } from '@aiapp/shared';
 import { TRUST_POSTURES } from '@aiapp/shared';
+
+/**
+ * Loads `.env` from the repository root, not from the current directory.
+ *
+ * `import 'dotenv/config'` reads `${process.cwd()}/.env`. In this monorepo the
+ * server is started with `npm run start --workspace @aiapp/server`, which sets
+ * the cwd to `packages/server/` — where no `.env` exists. The result was silent
+ * and total: every key, provider choice and cookie setting in the root `.env`
+ * was ignored, the app fell back to hardcoded defaults, and the only symptom
+ * was analysis quietly running on the offline analyzer forever.
+ *
+ * So walk up from this file until a `.env` turns up. Existing environment
+ * variables always win, which keeps CI, containers and the test harness in
+ * control of their own settings.
+ */
+function loadDotEnv(): void {
+  const candidates: string[] = [];
+
+  // From the compiled module outward: dist/ → packages/server/ → repo root.
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 6; depth++) {
+    candidates.push(path.join(dir, '.env'));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // And the working directory, for anyone running the server directly.
+  candidates.push(path.resolve(process.cwd(), '.env'));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      loadEnvFile({ path: candidate });
+      break;
+    }
+  }
+}
+
+loadDotEnv();
 
 function str(key: string, fallback: string): string {
   const v = process.env[key];
@@ -162,7 +202,7 @@ export function loadConfig(): Config {
     ytdlpCookiesFromBrowser: str('YTDLP_COOKIES_FROM_BROWSER', ''),
     ytdlpCookiesFile: str('YTDLP_COOKIES_FILE', ''),
     ffmpegBin: str('FFMPEG_BIN', 'ffmpeg'),
-    enableBrowserAgent: bool('ENABLE_BROWSER_AGENT', false),
+    enableBrowserAgent: bool('ENABLE_BROWSER_AGENT', true),
     maxUsdPerLink: num('MAX_USD_PER_LINK', 0.75),
     maxUsdPerUserPerDay: num('MAX_USD_PER_USER_PER_DAY', 10),
     maxAsrSecondsPerLink: num('MAX_ASR_SECONDS_PER_LINK', 900),
