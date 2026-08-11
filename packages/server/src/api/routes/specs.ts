@@ -82,19 +82,25 @@ specsRouter.get(
   }),
 );
 
-const decisionSchema = z.object({
-  items: z
-    .array(
-      z.object({
-        itemId: z.string().min(1),
-        decision: z.enum(DECISION_CHOICES),
-        edits: z.record(z.unknown()).optional(),
-      }),
-    )
-    .min(1, 'Decide on at least one item.')
-    .max(100),
-  dryRun: z.boolean().optional(),
-});
+const decisionSchema = z
+  .object({
+    items: z
+      .array(
+        z.object({
+          itemId: z.string().min(1),
+          decision: z.enum(DECISION_CHOICES),
+          edits: z.record(z.unknown()).optional(),
+        }),
+      )
+      .max(100)
+      .optional(),
+    /** "Pick this route": approve everything on one pathway, forgo the rest. */
+    pathwayId: z.string().min(1).optional(),
+    dryRun: z.boolean().optional(),
+  })
+  .refine((body) => (body.items && body.items.length > 0) || body.pathwayId, {
+    message: 'Choose a route, or decide on at least one item.',
+  });
 
 /**
  * POST /v1/specs/{specId}/decisions — the human gate (spec §9).
@@ -103,6 +109,65 @@ const decisionSchema = z.object({
  * trust dial holds back are reported so the UI can ask for the extra
  * confirmation rather than silently doing nothing.
  */
+/**
+ * POST /v1/specs/{specId}/confirm — the "yes, really" the trust dial asks for.
+ *
+ * Approving an item is the first gate; for a sensitive item the dial holds it
+ * and reports it in `awaitingConfirmation`. Without this route the only way to
+ * release it would be to loosen the posture globally, which is exactly the
+ * wrong trade: the user would widen autonomy for everything in order to permit
+ * one thing. Confirmation here is scoped to these items on this run.
+ */
+specsRouter.post(
+  '/:specId/confirm',
+  rateLimit({ capacity: 30, refillPerSecond: 1, key: 'confirm' }),
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const spec = getSpec(String(req.params['specId']), user.userId);
+    if (!spec) throw notFound('No such spec.');
+
+    const parsed = z
+      .object({ itemIds: z.array(z.string().min(1)).min(1).max(100) })
+      .safeParse(req.body);
+    if (!parsed.success) throw badRequest('Name the items to confirm.', parsed.error.flatten().fieldErrors);
+
+    const known = new Map(spec.items.map((item) => [item.itemId, item]));
+    const unknown = parsed.data.itemIds.filter((itemId) => !known.has(itemId));
+    if (unknown.length > 0) throw badRequest(`Unknown item${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}`);
+
+    // Only an item the user already approved may be confirmed. Confirmation
+    // releases the trust gate; it is not a second way to approve something.
+    const decisions = listDecisions(spec.specId);
+    const approved = new Set(decisions.filter((d) => d.decision === 'approve').map((d) => d.itemId));
+    const notApproved = parsed.data.itemIds.filter((itemId) => !approved.has(itemId));
+    if (notApproved.length > 0) {
+      throw badRequest('Approve an item before confirming it.', { itemIds: notApproved });
+    }
+
+    const run = createRun({
+      specId: spec.specId,
+      jobId: spec.jobId,
+      userId: user.userId,
+      dryRun: false,
+      confirmedItemIds: parsed.data.itemIds,
+    });
+    enqueue({ jobId: spec.jobId, kind: 'implement', payload: { runId: run.runId } });
+
+    for (const itemId of parsed.data.itemIds) {
+      audit({
+        userId: user.userId,
+        jobId: spec.jobId,
+        itemId,
+        runId: run.runId,
+        event: 'decision.confirmed',
+        detail: known.get(itemId)?.title ?? '',
+      });
+    }
+
+    res.status(202).json({ runId: run.runId, confirmed: parsed.data.itemIds.length });
+  }),
+);
+
 specsRouter.post(
   '/:specId/decisions',
   rateLimit({ capacity: 30, refillPerSecond: 1, key: 'decisions' }),
@@ -115,12 +180,39 @@ specsRouter.post(
     if (!parsed.success) throw badRequest('Check your selections.', parsed.error.flatten().fieldErrors);
 
     const known = new Map(spec.items.map((item) => [item.itemId, item]));
-    const unknown = parsed.data.items.filter((entry) => !known.has(entry.itemId));
-    if (unknown.length > 0) {
-      throw badRequest(`Unknown item${unknown.length === 1 ? '' : 's'}: ${unknown.map((u) => u.itemId).join(', ')}`);
+
+    // Picking a route expands to a decision on every item in the spec: approve
+    // the ones on that route, forgo the rest. Explicit per-item entries are
+    // applied afterwards so a user can pick a route and still amend one item.
+    const entries = new Map<string, { itemId: string; decision: (typeof DECISION_CHOICES)[number]; edits?: Record<string, unknown> }>();
+
+    if (parsed.data.pathwayId) {
+      const pathway = spec.pathways.find((candidate) => candidate.pathwayId === parsed.data.pathwayId);
+      if (!pathway) throw notFound('No such route on this plan.');
+      const onRoute = new Set(pathway.itemIds);
+      for (const item of spec.items) {
+        entries.set(item.itemId, {
+          itemId: item.itemId,
+          decision: onRoute.has(item.itemId) ? 'approve' : 'forgo',
+        });
+      }
+      audit({
+        userId: user.userId,
+        jobId: spec.jobId,
+        event: 'decision.pathway',
+        detail: `${pathway.label} (${pathway.itemIds.length} items)`,
+      });
     }
 
-    for (const entry of parsed.data.items) {
+    for (const entry of parsed.data.items ?? []) {
+      if (!known.has(entry.itemId)) {
+        throw badRequest(`Unknown item: ${entry.itemId}`);
+      }
+      entries.set(entry.itemId, entry);
+    }
+
+    const chosen = [...entries.values()];
+    for (const entry of chosen) {
       recordDecision({
         specId: spec.specId,
         itemId: entry.itemId,
@@ -141,7 +233,7 @@ specsRouter.post(
     await writeDecisions(user.userId, jobFolderName(spec.jobId, user.userId), spec, decisions).catch(() => undefined);
     await writePlan(user.userId, jobFolderName(spec.jobId, user.userId), spec, decisions).catch(() => undefined);
 
-    const approvedItems = parsed.data.items
+    const approvedItems = chosen
       .filter((entry) => entry.decision === 'approve')
       .map((entry) => known.get(entry.itemId)!);
 

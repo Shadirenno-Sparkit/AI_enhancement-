@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { PLATFORM_LABELS } from '@aiapp/shared';
+import { INPUT_KIND_LABELS, LIFE_DOMAIN_LABELS, PLATFORM_LABELS } from '@aiapp/shared';
 import type { LibraryEntry } from '@aiapp/shared';
 import { api } from '../api';
 import { Badge, Empty, Notice, Spinner, StateBadge, relativeTime } from '../components/ui';
@@ -15,7 +15,13 @@ const FILTERS: { id: Filter; label: string }[] = [
 ];
 
 /** The inbox: every captured link and where it got to (BR-F4). */
-export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): JSX.Element {
+export function Library({
+  onOpen,
+  toast,
+}: {
+  onOpen: (entry: LibraryEntry) => void;
+  toast: (message: string) => void;
+}): JSX.Element {
   const [filter, setFilter] = useState<Filter>('review');
 
   const { data, loading, error, reload } = useAsync(
@@ -82,7 +88,13 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
 
       <div>
         {filtered.map((entry) => (
-          <LibraryRow key={entry.jobId} entry={entry} onOpen={() => onOpen(entry)} />
+          <LibraryRow
+            key={entry.jobId}
+            entry={entry}
+            onOpen={() => onOpen(entry)}
+            onPlanned={reload}
+            toast={toast}
+          />
         ))}
       </div>
 
@@ -97,43 +109,102 @@ export function Library({ onOpen }: { onOpen: (entry: LibraryEntry) => void }): 
   );
 }
 
-function LibraryRow({ entry, onOpen }: { entry: LibraryEntry; onOpen: () => void }): JSX.Element {
+function LibraryRow({
+  entry,
+  onOpen,
+  onPlanned,
+  toast,
+}: {
+  entry: LibraryEntry;
+  onOpen: () => void;
+  onPlanned: () => void;
+  toast: (message: string) => void;
+}): JSX.Element {
   const pending = entry.itemCounts.pending;
-  const processing = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'].includes(entry.state);
+  const processing = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'TRIAGED', 'ANALYZED'].includes(
+    entry.state,
+  );
+  const [planning, setPlanning] = useState(false);
+
+  // Triage parked this: worth something, but not enough to plan unprompted.
+  // The headline is already on the row, so the user decides with the same
+  // information the gate used.
+  const awaitingPlan = entry.state === 'AWAITING_PLAN';
+
+  const source =
+    entry.inputKind === 'link' ? PLATFORM_LABELS[entry.platform] : INPUT_KIND_LABELS[entry.inputKind];
 
   return (
-    <button type="button" className="card card--interactive" onClick={onOpen}>
-      <div className="card__row">
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <p className="card__title">{entry.title}</p>
-          <p className="faint" style={{ margin: 0 }}>
-            {PLATFORM_LABELS[entry.platform]} · {relativeTime(entry.createdAt)}
-          </p>
+    <div className={`card card--interactive${awaitingPlan ? ' card--awaiting' : ''}`}>
+      <button
+        type="button"
+        onClick={onOpen}
+        style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
+      >
+        <div className="card__row">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p className="card__title">{entry.title}</p>
+            <p className="faint" style={{ margin: 0 }}>
+              {source} · {relativeTime(entry.createdAt)}
+            </p>
+          </div>
+          <StateBadge state={entry.state} />
         </div>
-        <StateBadge state={entry.state} />
-      </div>
 
-      {entry.statusMessage && processing ? (
-        <p className="faint" style={{ margin: '8px 0 0' }}>
-          {entry.statusMessage}
-        </p>
+        {entry.statusMessage && (processing || awaitingPlan) ? (
+          <p className="faint" style={{ margin: '8px 0 0' }}>
+            {entry.statusMessage}
+          </p>
+        ) : null}
+
+        <div className="badge-row">
+          {entry.domains.map((domain) => (
+            <Badge key={domain}>{LIFE_DOMAIN_LABELS[domain]}</Badge>
+          ))}
+          {pending > 0 ? <Badge tone="accent">{pending} to decide</Badge> : null}
+          {entry.itemCounts.approved > 0 ? <Badge tone="success">{entry.itemCounts.approved} approved</Badge> : null}
+          {entry.itemCounts.deferred > 0 ? <Badge tone="warning">{entry.itemCounts.deferred} deferred</Badge> : null}
+          {entry.lowConfidence ? <Badge tone="warning">low confidence</Badge> : null}
+          {entry.cost.usd > 0 ? <Badge>${entry.cost.usd.toFixed(3)}</Badge> : null}
+        </div>
+      </button>
+
+      {awaitingPlan ? (
+        <div className="btn-row" style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className="btn btn--sm"
+            disabled={planning}
+            onClick={async () => {
+              setPlanning(true);
+              try {
+                const result = await api.planNow(entry.jobId);
+                toast(result.alreadyPlanned ? 'Already planned — opening it' : 'Working out what you should do…');
+                onPlanned();
+              } catch (err) {
+                toast(err instanceof Error ? err.message : 'Could not plan that.');
+              } finally {
+                setPlanning(false);
+              }
+            }}
+          >
+            {planning ? 'Planning…' : 'Plan this'}
+          </button>
+        </div>
       ) : null}
-
-      <div className="badge-row">
-        {pending > 0 ? <Badge tone="accent">{pending} to decide</Badge> : null}
-        {entry.itemCounts.approved > 0 ? <Badge tone="success">{entry.itemCounts.approved} approved</Badge> : null}
-        {entry.itemCounts.deferred > 0 ? <Badge tone="warning">{entry.itemCounts.deferred} deferred</Badge> : null}
-        {entry.lowConfidence ? <Badge tone="warning">low confidence</Badge> : null}
-        {entry.cost.usd > 0 ? <Badge>${entry.cost.usd.toFixed(3)}</Badge> : null}
-      </div>
-    </button>
+    </div>
   );
 }
 
 function matchesFilter(entry: LibraryEntry, filter: Filter): boolean {
   switch (filter) {
     case 'review':
-      return entry.state === 'SPEC_READY' || entry.state === 'AWAITING_DECISION' || entry.itemCounts.pending > 0;
+      return (
+        entry.state === 'SPEC_READY' ||
+        entry.state === 'AWAITING_DECISION' ||
+        entry.state === 'AWAITING_PLAN' ||
+        entry.itemCounts.pending > 0
+      );
     case 'attention':
       return entry.state === 'NEEDS_INPUT' || entry.state === 'FAILED' || entry.lowConfidence;
     case 'done':

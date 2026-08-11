@@ -3,12 +3,16 @@ import type {
   Connector,
   DecisionChoice,
   DecisionResponse,
+  FactCategory,
   ImplementationRun,
   Job,
   LibraryEntry,
+  ProfileFact,
+  ProfileResponse,
   Provenance,
   Spec,
   SpecItem,
+  UniversalCaptureRequest,
   User,
   UserPreferences,
 } from '@aiapp/shared';
@@ -250,6 +254,27 @@ export const api = {
   capture: (input: { url: string; sharedText?: string; note?: string; captureSource?: string; clientRef?: string }) =>
     request<CaptureResponse>('/v1/links', { method: 'POST', body: input }),
 
+  /** Universal capture: a link, a typed note, a voice memo or a photo. */
+  captureAny: (input: UniversalCaptureRequest) =>
+    request<CaptureResponse>('/v1/captures', { method: 'POST', body: input }),
+
+  /** Spend the deep planning pass on a capture triage parked. */
+  planNow: (jobId: string) =>
+    request<{ jobId: string; alreadyPlanned: boolean }>(`/v1/links/${jobId}/plan`, { method: 'POST' }),
+
+  profile: () => request<ProfileResponse>('/v1/profile'),
+
+  addFact: (input: { category: FactCategory; key: string; value: string; detail?: string | null }) =>
+    request<{ fact: ProfileFact }>('/v1/profile/facts', { method: 'POST', body: input }),
+
+  addFacts: (facts: { category: FactCategory; key: string; value: string; detail?: string | null }[]) =>
+    request<{ saved: number }>('/v1/profile/bulk', { method: 'POST', body: { facts } }),
+
+  confirmFact: (factId: string) =>
+    request<{ fact: ProfileFact }>(`/v1/profile/facts/${factId}/confirm`, { method: 'POST' }),
+
+  deleteFact: (factId: string) => request<void>(`/v1/profile/facts/${factId}`, { method: 'DELETE' }),
+
   library: (limit = 100) => request<{ entries: LibraryEntry[] }>(`/v1/library?limit=${limit}`),
 
   jobStatus: (jobId: string) => request<JobStatus>(`/v1/jobs/${jobId}`),
@@ -258,6 +283,20 @@ export const api = {
 
   decide: (specId: string, items: { itemId: string; decision: DecisionChoice; edits?: Record<string, unknown> }[], dryRun?: boolean) =>
     request<DecisionResponse>(`/v1/specs/${specId}/decisions`, { method: 'POST', body: { items, dryRun } }),
+
+  /** Release items the trust dial held back, for this run only. */
+  confirmItems: (specId: string, itemIds: string[]) =>
+    request<{ runId: string; confirmed: number }>(`/v1/specs/${specId}/confirm`, {
+      method: 'POST',
+      body: { itemIds },
+    }),
+
+  /** Pick a route: approves everything on it and forgoes the rest in one call. */
+  choosePathway: (specId: string, pathwayId: string, dryRun?: boolean) =>
+    request<DecisionResponse>(`/v1/specs/${specId}/decisions`, {
+      method: 'POST',
+      body: { pathwayId, dryRun },
+    }),
 
   revert: (specId: string, itemId: string) =>
     request<{ reverted: boolean; steps: string[] }>(`/v1/specs/${specId}/revert/${itemId}`, { method: 'POST' }),

@@ -25,6 +25,33 @@ const IMPERATIVE_VERBS = [
   'add',
   'ask',
   'automate',
+  // Life-domain openers. Advice about what to read, buy, cancel or practise is
+  // as much an instruction as advice about a system prompt.
+  'block',
+  'book',
+  'buy',
+  'call',
+  'cancel',
+  'check',
+  'email',
+  'follow',
+  'get',
+  'join',
+  'learn',
+  'listen',
+  'message',
+  'order',
+  'practice',
+  'practise',
+  'read',
+  'reach',
+  'review',
+  'subscribe',
+  'swap',
+  'track',
+  'unsubscribe',
+  'walk',
+  'watch',
   'build',
   'change',
   'configure',
@@ -162,6 +189,51 @@ const DOMAIN_TERMS = [
 /** Ordered most-specific-first: the first pattern that matches wins. */
 const TYPE_RULES: { type: ItemType; patterns: RegExp[] }[] = [
   {
+    // An explicit "create a skill" outranks the recurrence wording that often
+    // sits in the same sentence — "create a skill that runs every morning"
+    // describes a skill, and the schedule is a property of it.
+    type: 'create_skill',
+    patterns: [/\bcreate\s+(a|an)?\s*(reusable|custom|new)?\s*(skill|command|macro)\b/i],
+  },
+  {
+    type: 'acquire_media',
+    patterns: [
+      /\b(audiobook|ebook|e-book|paperback|hardcover)\b/i,
+      /\bread\s+(the\s+)?(book|"|“|')/i,
+      /\b(book|course|newsletter|podcast)\b.{0,24}\bby\s+[A-Z]/,
+      /\b(pick up|grab|get)\s+(a\s+)?copy\b/i,
+      /\b(enrol|enroll|sign up for)\b.{0,20}\bcourse\b/i,
+    ],
+  },
+  {
+    type: 'financial_review',
+    patterns: [
+      /\b(cancel|unsubscribe from)\b.{0,30}\b(subscription|plan|membership|service)/i,
+      /\b(interest rate|apy|apr|annual fee|late fee|overdraft)\b/i,
+      /\b(refinanc|renegotiat)\w*\b/i,
+      /\b(switch|move)\b.{0,24}\b(bank|account|provider|plan)\b/i,
+      /\bsubscription\b.{0,40}\b(unused|not (used|opened)|haven'?t (used|opened))/i,
+    ],
+  },
+  {
+    type: 'contact_person',
+    patterns: [
+      /\breach out to\b/i,
+      /\b(email|message|dm|call|text)\s+(your|the|him|her|them|someone)\b/i,
+      /\b(ask|get)\b.{0,20}\b(for an? )?(intro|introduction|referral)\b/i,
+      /\bcatch up with\b/i,
+    ],
+  },
+  {
+    type: 'build_habit',
+    patterns: [
+      /\bhabit\b/i,
+      /\b(streak|consistency)\b/i,
+      /\bevery (morning|day|night) (for|until)\b/i,
+      /\b(stack|attach)\b.{0,24}\bhabit\b/i,
+    ],
+  },
+  {
     type: 'schedule_task',
     patterns: [
       /\bevery (morning|day|night|week|monday|hour)\b/i,
@@ -256,6 +328,71 @@ const PREAMBLE_PATTERNS = [
 const LEADING_FILLER =
   /^((so|now|then|and|but|ok|okay|alright|also|plus|just|simply|literally|basically|honestly|actually|next|first|firstly|second|secondly|third|thirdly|finally|lastly|additionally|again|oh)[,\s]+|(number|step|tip)\s+(one|two|three|four|five|\d+)[,:.\s]+|\d+[.)]\s*)+/i;
 
+/**
+ * Reported speech, stripped before the imperative check.
+ *
+ * Dictated and overheard captures almost always arrive as "he said you should
+ * create a…" or "someone recommended setting up a…". Without this the advice
+ * is invisible to the imperative test, and any title generated from it leads
+ * with the messenger instead of the message.
+ */
+const REPORTED_SPEECH =
+  /^\s*((the\s+)?(guy|girl|woman|man|person|someone|somebody|they|he|she|a friend|my friend|this (guy|girl|woman|man|person)|everyone|people)\b[^,.]{0,60}?\s+(said|says|told me|recommended|recommends|suggested|suggests|mentioned|mentions|swears by)\s*(that\s+)?|(it|this)\s+(is|was)\s+(said|suggested|recommended)\s+(that\s+)?)/i;
+
+/**
+ * Second-person framing around an instruction: "you should X" carries the same
+ * advice as "X", and stripping it lets the imperative test see the verb.
+ */
+const ADVICE_FRAMING =
+  /^\s*(you\s+(should|can|could|need to|have to|might want to|ought to|really should)|it('s| is)\s+worth|worth|try(ing)?\s+to|make sure (to|you)|the (trick|move|idea) is to|consider)\s+/i;
+
+/**
+ * Candidate base forms for a word, so the imperative list matches inflections.
+ *
+ * Advice arrives in whatever form the speaker used — "cancelling", "setting up",
+ * "reads" — while the verb list holds bare stems. Without this, "Also worth
+ * cancelling that subscription" fails the imperative test on a spelling
+ * difference and the advice is silently dropped.
+ */
+export function verbForms(word: string): string[] {
+  const base = word.replace(/[^a-z]/g, '');
+  if (!base) return [];
+
+  const forms = new Set<string>([base]);
+  const add = (candidate: string): void => {
+    if (candidate.length >= 2) forms.add(candidate);
+  };
+
+  if (base.endsWith('ing')) {
+    const stem = base.slice(0, -3);
+    add(stem);
+    add(`${stem}e`);
+    // "cancelling" → "cancell" → "cancel"; "setting" → "sett" → "set".
+    if (stem.length > 2 && stem.at(-1) === stem.at(-2)) add(stem.slice(0, -1));
+  }
+  if (base.endsWith('ed')) {
+    const stem = base.slice(0, -2);
+    add(stem);
+    add(`${stem}e`);
+    if (stem.length > 2 && stem.at(-1) === stem.at(-2)) add(stem.slice(0, -1));
+  }
+  if (base.endsWith('s') && !base.endsWith('ss')) add(base.slice(0, -1));
+
+  return [...forms];
+}
+
+/** Strips messenger and framing so what remains is the advice itself. */
+export function stripAdviceFraming(text: string): string {
+  let result = text.trim();
+  // Applied repeatedly because the forms nest: "He said you should also just…".
+  for (let pass = 0; pass < 4; pass++) {
+    const before = result;
+    result = result.replace(REPORTED_SPEECH, '').replace(LEADING_FILLER, '').replace(ADVICE_FRAMING, '');
+    if (result === before) break;
+  }
+  return result.trim() || text.trim();
+}
+
 const SEGMENT_TAG = /^\[(\d+)\]\s*\([^)]*\)\s*/;
 
 interface Sentence {
@@ -292,8 +429,11 @@ function scoreSentence(text: string): number {
   const lower = text.toLowerCase();
   let score = 0;
 
-  const firstWord = lower.replace(LEADING_FILLER, '').split(/\s+/)[0] ?? '';
-  if (IMPERATIVE_VERBS.includes(firstWord.replace(/[^a-z]/g, ''))) score += 0.35;
+  // Reported speech and "you should" framing are stripped first, so advice
+  // relayed second-hand scores the same as advice stated directly — the
+  // difference is who said it, not whether it is actionable.
+  const firstWord = stripAdviceFraming(lower).split(/\s+/)[0] ?? '';
+  if (verbForms(firstWord).some((form) => IMPERATIVE_VERBS.includes(form))) score += 0.35;
 
   for (const marker of ADVICE_MARKERS) {
     if (lower.includes(marker)) {
@@ -411,10 +551,9 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 /** Turns a raw tip sentence into a short imperative title. */
 export function titleFromTip(text: string): string {
-  let title = text
-    .replace(LEADING_FILLER, '')
+  let title = stripAdviceFraming(text)
     .replace(
-      /^(you should|you can|you need to|you have to|make sure( to| that)?|be sure to|i recommend( that)?|the trick is( to)?|the secret is( to)?|the key is( to)?|what you do is|all you have to do is|pro ?tip:?)\s*/i,
+      /^(i recommend( that)?|the trick is( to)?|the secret is( to)?|the key is( to)?|what you do is|all you have to do is|pro ?tip:?)\s*/i,
       '',
     )
     .replace(/\s+/g, ' ')
@@ -460,6 +599,18 @@ const EFFORT_BY_TYPE: Record<ItemType, EffortLevel> = {
   download_file: 'medium',
   connect_tool: 'medium',
   run_command: 'high',
+  // Life-domain items. Effort here is the user's, not the engine's: preparing
+  // an order is trivial for us and a two-minute decision for them, whereas
+  // learning a topic is hours of their time however little we spend.
+  research_topic: 'low',
+  acquire_media: 'low',
+  purchase: 'low',
+  financial_review: 'medium',
+  contact_person: 'medium',
+  build_habit: 'medium',
+  automation_workflow: 'medium',
+  create_project: 'medium',
+  learn_topic: 'high',
 };
 
 const IMPACT_BY_TYPE: Record<ItemType, ImpactLevel> = {
@@ -471,6 +622,15 @@ const IMPACT_BY_TYPE: Record<ItemType, ImpactLevel> = {
   generate_file: 'medium',
   download_file: 'medium',
   run_command: 'medium',
+  build_habit: 'high',
+  learn_topic: 'high',
+  create_project: 'high',
+  automation_workflow: 'high',
+  financial_review: 'high',
+  acquire_media: 'medium',
+  contact_person: 'medium',
+  purchase: 'medium',
+  research_topic: 'low',
 };
 
 export function effortFor(type: ItemType): EffortLevel {
@@ -500,6 +660,24 @@ export function methodFor(type: ItemType): string {
       return 'Write the setting change into your configuration notes with exact steps to apply it.';
     case 'run_command':
       return 'Prepare the command with an explanation; running it needs your explicit confirmation.';
+    case 'acquire_media':
+      return 'Prepare the order in the format you actually consume, with the link ready — you place it.';
+    case 'purchase':
+      return 'Write up what to buy, what it costs and what to check first. Nothing is bought for you.';
+    case 'build_habit':
+      return 'Write the habit down with its trigger and cadence, and register the reminder that keeps it alive.';
+    case 'learn_topic':
+      return 'Lay out a study sequence with checkpoints so the topic has a route through it rather than a pile of links.';
+    case 'contact_person':
+      return 'Draft the message and save it for you to review. The app never sends anything on your behalf.';
+    case 'research_topic':
+      return 'Frame the question, list where to look, and note what the answer would let you decide.';
+    case 'create_project':
+      return 'Set up a project folder with its own instructions and skills, ready to open in Claude.';
+    case 'automation_workflow':
+      return 'Generate an importable n8n workflow for the automation, with each step wired up.';
+    case 'financial_review':
+      return 'Write down exactly what to check and the questions to ask. No account is touched.';
   }
 }
 
@@ -523,5 +701,23 @@ export function whyFor(type: ItemType, tip: string): string {
       return `A one-time setting change that the post says materially improves results. Source: “${subject}”`;
     case 'run_command':
       return `The post describes a command-line step; preparing it keeps the work reproducible. Source: “${subject}”`;
+    case 'acquire_media':
+      return `Getting hold of the thing is the step everything else waits on. Source: “${subject}”`;
+    case 'purchase':
+      return `This names something worth owning; having the decision written down stops it becoming an impulse buy. Source: “${subject}”`;
+    case 'build_habit':
+      return `The benefit here comes from repetition, so it needs a trigger and a cadence rather than good intentions. Source: “${subject}”`;
+    case 'learn_topic':
+      return `This is a subject to work through rather than a tip to apply, so it gets a sequence. Source: “${subject}”`;
+    case 'contact_person':
+      return `Acting on this means talking to someone, and the draft is the part that usually stops people. Source: “${subject}”`;
+    case 'research_topic':
+      return `There is a decision here you cannot make yet without finding something out first. Source: “${subject}”`;
+    case 'create_project':
+      return `This is big enough to deserve its own workspace rather than living inside another conversation. Source: “${subject}”`;
+    case 'automation_workflow':
+      return `The steps described are mechanical and repeat, which is exactly what an automation is for. Source: “${subject}”`;
+    case 'financial_review':
+      return `Money advice is only worth anything once you check it against your own numbers. Source: “${subject}”`;
   }
 }

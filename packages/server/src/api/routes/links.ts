@@ -117,6 +117,37 @@ linksRouter.post(
   }),
 );
 
+/**
+ * POST /v1/links/{id}/plan — spend the deep planning call on demand.
+ *
+ * Triage parks anything it scores below the auto-plan threshold in
+ * AWAITING_PLAN rather than discarding it. This is the user overriding that
+ * judgement: they looked at the headline and decided it is worth planning after
+ * all. Extraction is already done and cached, so this only pays for the
+ * analysis.
+ */
+linksRouter.post(
+  '/:jobId/plan',
+  rateLimit({ capacity: 20, refillPerSecond: 1 / 10, key: 'plan' }),
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const job = getJob(String(req.params['jobId']), user.userId);
+    if (!job) throw notFound('No such capture.');
+
+    if (job.state === 'SPEC_READY' || job.state === 'AWAITING_DECISION') {
+      // Already planned — return the existing plan rather than paying twice.
+      res.status(200).json({ jobId: job.jobId, state: job.state, alreadyPlanned: true });
+      return;
+    }
+
+    assertWithinDailyBudget(user.userId);
+    enqueue({ jobId: job.jobId, kind: 'plan' });
+    audit({ userId: user.userId, jobId: job.jobId, event: 'link.plan_requested' });
+
+    res.status(202).json({ jobId: job.jobId, state: job.state, alreadyPlanned: false });
+  }),
+);
+
 linksRouter.delete(
   '/:jobId',
   asyncHandler(async (req, res) => {

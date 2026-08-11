@@ -4,7 +4,11 @@ import type {
   EffortLevel,
   ImpactLevel,
   ItemType,
+  LifeDomain,
+  Pathway,
+  PathwayStance,
   PermissionScope,
+  ProposedFact,
   RiskTier,
   Spec,
   SpecItem,
@@ -20,6 +24,8 @@ interface SpecRow {
   summary: string;
   technical_spec: string;
   no_actionable_items: number;
+  domains: string | null;
+  proposed_facts: string | null;
   created_at: string;
 }
 
@@ -42,6 +48,23 @@ interface ItemRow {
   parameters: string;
   source_segments: string;
   duplicate_of_item_id: string | null;
+  domain: string | null;
+  personalized_on: string | null;
+}
+
+interface PathwayRow {
+  pathway_id: string;
+  spec_id: string;
+  user_id: string;
+  ordinal: number;
+  label: string;
+  stance: string;
+  rationale: string;
+  grounded_in_facts: string;
+  estimated_minutes: number;
+  estimated_cost_usd: number;
+  item_ids: string;
+  recommended: number;
 }
 
 function toItem(row: ItemRow): SpecItem {
@@ -63,10 +86,28 @@ function toItem(row: ItemRow): SpecItem {
     parameters: parseJson<Record<string, unknown>>(row.parameters, {}),
     sourceSegments: parseJson<number[]>(row.source_segments, []),
     duplicateOfItemId: row.duplicate_of_item_id,
+    domain: (row.domain as LifeDomain) ?? 'ai_workflow',
+    personalizedOn: parseJson<string[]>(row.personalized_on, []),
   };
 }
 
-function toSpec(row: SpecRow, items: SpecItem[]): Spec {
+function toPathway(row: PathwayRow): Pathway {
+  return {
+    pathwayId: row.pathway_id,
+    specId: row.spec_id,
+    ordinal: row.ordinal,
+    label: row.label,
+    stance: row.stance as PathwayStance,
+    rationale: row.rationale,
+    groundedInFacts: parseJson<string[]>(row.grounded_in_facts, []),
+    estimatedMinutes: row.estimated_minutes,
+    estimatedCostUsd: row.estimated_cost_usd,
+    itemIds: parseJson<string[]>(row.item_ids, []),
+    recommended: row.recommended === 1,
+  };
+}
+
+function toSpec(row: SpecRow, items: SpecItem[], pathways: Pathway[]): Spec {
   return {
     specId: row.spec_id,
     jobId: row.job_id,
@@ -76,8 +117,24 @@ function toSpec(row: SpecRow, items: SpecItem[]): Spec {
     technicalSpec: row.technical_spec,
     noActionableItems: row.no_actionable_items === 1,
     items,
+    pathways,
+    domains: parseJson<LifeDomain[]>(row.domains, []),
+    proposedFacts: parseJson<ProposedFact[]>(row.proposed_facts, []),
     createdAt: row.created_at,
   };
+}
+
+/** A pathway as the analyzer produced it: items referenced by position. */
+export interface NewPathway {
+  label: string;
+  stance: PathwayStance;
+  rationale: string;
+  groundedInFacts: string[];
+  estimatedMinutes: number;
+  estimatedCostUsd: number;
+  itemIndexes: number[];
+  recommended: boolean;
+  ordinal: number;
 }
 
 export interface NewSpec {
@@ -88,6 +145,9 @@ export interface NewSpec {
   technicalSpec: string;
   noActionableItems: boolean;
   items: Omit<SpecItem, 'itemId' | 'specId' | 'ordinal'>[];
+  pathways?: NewPathway[];
+  domains?: LifeDomain[];
+  proposedFacts?: ProposedFact[];
 }
 
 export function createSpec(input: NewSpec): Spec {
@@ -101,8 +161,9 @@ export function createSpec(input: NewSpec): Spec {
     database.prepare('DELETE FROM specs WHERE job_id = ?').run(input.jobId);
     database
       .prepare(
-        `INSERT INTO specs (spec_id, job_id, user_id, title, summary, technical_spec, no_actionable_items, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO specs (spec_id, job_id, user_id, title, summary, technical_spec,
+                            no_actionable_items, domains, proposed_facts, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         specId,
@@ -112,18 +173,26 @@ export function createSpec(input: NewSpec): Spec {
         input.summaryPlainEnglish,
         input.technicalSpec,
         input.noActionableItems ? 1 : 0,
+        JSON.stringify(input.domains ?? []),
+        JSON.stringify(input.proposedFacts ?? []),
         timestamp,
       );
 
     const stmt = database.prepare(
       `INSERT INTO spec_items (item_id, spec_id, user_id, ordinal, title, type, why, proposed_method,
                                prerequisites, missing_prerequisites, effort, impact, risk_tier, scopes,
-                               requires_browser, parameters, source_segments, duplicate_of_item_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               requires_browser, parameters, source_segments, duplicate_of_item_id,
+                               domain, personalized_on)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    // Item ids are generated here, so the analyzer's positional pathway
+    // references are resolved to real ids in the same transaction.
+    const itemIds: string[] = [];
     input.items.forEach((item, index) => {
+      const itemId = id('item');
+      itemIds.push(itemId);
       stmt.run(
-        id('item'),
+        itemId,
         specId,
         input.userId,
         index,
@@ -141,6 +210,32 @@ export function createSpec(input: NewSpec): Spec {
         JSON.stringify(item.parameters),
         JSON.stringify(item.sourceSegments),
         item.duplicateOfItemId ?? null,
+        item.domain,
+        JSON.stringify(item.personalizedOn),
+      );
+    });
+
+    const pathwayStmt = database.prepare(
+      `INSERT INTO pathways (pathway_id, spec_id, user_id, ordinal, label, stance, rationale,
+                             grounded_in_facts, estimated_minutes, estimated_cost_usd, item_ids, recommended)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    (input.pathways ?? []).forEach((pathway, index) => {
+      pathwayStmt.run(
+        id('path'),
+        specId,
+        input.userId,
+        pathway.ordinal ?? index,
+        pathway.label,
+        pathway.stance,
+        pathway.rationale,
+        JSON.stringify(pathway.groundedInFacts),
+        pathway.estimatedMinutes,
+        pathway.estimatedCostUsd,
+        JSON.stringify(
+          pathway.itemIndexes.map((position) => itemIds[position]).filter((value): value is string => !!value),
+        ),
+        pathway.recommended ? 1 : 0,
       );
     });
   });
@@ -155,21 +250,28 @@ function loadItems(specId: string): SpecItem[] {
   return rows.map(toItem);
 }
 
+function loadPathways(specId: string): Pathway[] {
+  const rows = db()
+    .prepare('SELECT * FROM pathways WHERE spec_id = ? ORDER BY ordinal ASC')
+    .all(specId) as PathwayRow[];
+  return rows.map(toPathway);
+}
+
 export function getSpec(specId: string, userId: string): Spec | null {
   const row = db()
     .prepare('SELECT * FROM specs WHERE spec_id = ? AND user_id = ?')
     .get(specId, userId) as SpecRow | undefined;
-  return row ? toSpec(row, loadItems(specId)) : null;
+  return row ? toSpec(row, loadItems(specId), loadPathways(specId)) : null;
 }
 
 export function getSpecUnscoped(specId: string): Spec | null {
   const row = db().prepare('SELECT * FROM specs WHERE spec_id = ?').get(specId) as SpecRow | undefined;
-  return row ? toSpec(row, loadItems(specId)) : null;
+  return row ? toSpec(row, loadItems(specId), loadPathways(specId)) : null;
 }
 
 export function getSpecByJob(jobId: string): Spec | null {
   const row = db().prepare('SELECT * FROM specs WHERE job_id = ?').get(jobId) as SpecRow | undefined;
-  return row ? toSpec(row, loadItems(row.spec_id)) : null;
+  return row ? toSpec(row, loadItems(row.spec_id), loadPathways(row.spec_id)) : null;
 }
 
 export function getItem(itemId: string, userId: string): SpecItem | null {

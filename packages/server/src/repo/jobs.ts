@@ -1,6 +1,6 @@
-import type { CaptureSource, Job, JobState, Platform } from '@aiapp/shared';
+import type { CaptureSource, InputKind, Job, JobState, LifeDomain, Platform, TriageVerdict } from '@aiapp/shared';
 import { JOB_STATE_ORDER, TERMINAL_JOB_STATES } from '@aiapp/shared';
-import { db, now } from '../db/index.js';
+import { db, now, parseJson } from '../db/index.js';
 import { id, idempotencyKey } from '../util/ids.js';
 
 interface JobRow {
@@ -21,6 +21,11 @@ interface JobRow {
   cost_model_tokens: number;
   cost_usd: number;
   attempts: number;
+  input_kind: string | null;
+  body_text: string | null;
+  triage_verdict: string | null;
+  value_score: number | null;
+  domains: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +36,8 @@ function toJob(row: JobRow): Job {
     userId: row.user_id,
     url: row.url,
     normalizedUrl: row.normalized_url,
+    inputKind: (row.input_kind as InputKind) ?? 'link',
+    bodyText: row.body_text,
     sharedText: row.shared_text,
     note: row.note,
     platform: row.platform as Platform,
@@ -45,6 +52,9 @@ function toJob(row: JobRow): Job {
       usd: Number(row.cost_usd.toFixed(6)),
     },
     attempts: row.attempts,
+    triageVerdict: (row.triage_verdict as TriageVerdict) ?? null,
+    valueScore: row.value_score,
+    domains: parseJson<LifeDomain[]>(row.domains, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -58,6 +68,9 @@ export interface CreateJobInput {
   sharedText?: string | null;
   note?: string | null;
   captureSource: CaptureSource;
+  inputKind?: InputKind;
+  /** Raw text for a typed note, or the transcript of a dictated one. */
+  bodyText?: string | null;
 }
 
 /**
@@ -79,8 +92,8 @@ export function createOrGetJob(input: CreateJobInput): { job: Job; deduped: bool
   db()
     .prepare(
       `INSERT INTO jobs (job_id, user_id, url, normalized_url, idempotency_key, shared_text, note,
-                         platform, state, capture_source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?)`,
+                         platform, state, capture_source, input_kind, body_text, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?, ?, ?)`,
     )
     .run(
       jobId,
@@ -92,6 +105,8 @@ export function createOrGetJob(input: CreateJobInput): { job: Job; deduped: bool
       input.note ?? null,
       input.platform,
       input.captureSource,
+      input.inputKind ?? 'link',
+      input.bodyText ?? null,
       timestamp,
       timestamp,
     );
@@ -125,6 +140,9 @@ export interface JobUpdate {
   title?: string | null;
   folderName?: string | null;
   platform?: Platform;
+  triageVerdict?: TriageVerdict | null;
+  valueScore?: number | null;
+  domains?: LifeDomain[];
 }
 
 /**
@@ -145,7 +163,8 @@ export function updateJob(jobId: string, patch: JobUpdate): Job | null {
 
   db()
     .prepare(
-      `UPDATE jobs SET state = ?, status_message = ?, title = ?, folder_name = ?, platform = ?, updated_at = ?
+      `UPDATE jobs SET state = ?, status_message = ?, title = ?, folder_name = ?, platform = ?,
+                       triage_verdict = ?, value_score = ?, domains = ?, updated_at = ?
        WHERE job_id = ?`,
     )
     .run(
@@ -154,6 +173,9 @@ export function updateJob(jobId: string, patch: JobUpdate): Job | null {
       patch.title !== undefined ? patch.title : current.title,
       patch.folderName !== undefined ? patch.folderName : current.folderName,
       patch.platform ?? current.platform,
+      patch.triageVerdict !== undefined ? patch.triageVerdict : current.triageVerdict,
+      patch.valueScore !== undefined ? patch.valueScore : current.valueScore,
+      JSON.stringify(patch.domains ?? current.domains),
       now(),
       jobId,
     );

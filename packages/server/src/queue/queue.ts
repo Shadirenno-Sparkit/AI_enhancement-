@@ -1,7 +1,11 @@
 import { db, now, parseJson } from '../db/index.js';
 import { randomToken } from '../util/ids.js';
 
-export type QueueKind = 'process' | 'implement';
+/**
+ * `process` runs extraction and triage; `plan` runs only the deep analysis on a
+ * capture that was already extracted; `implement` executes an approved run.
+ */
+export type QueueKind = 'process' | 'plan' | 'implement';
 
 export interface QueueItem {
   queueId: number;

@@ -63,7 +63,13 @@ export interface AutonomyDecision {
  * decides whether an *approved* item executes immediately or waits for an
  * explicit "yes, really" on higher-risk categories.
  */
-export function evaluateAutonomy(user: User, item: SpecItem, requestedDryRun: boolean): AutonomyDecision {
+export function evaluateAutonomy(
+  user: User,
+  item: SpecItem,
+  requestedDryRun: boolean,
+  /** True when the user explicitly confirmed this item for this run. */
+  confirmed = false,
+): AutonomyDecision {
   const cfg = config();
 
   if (!cfg.enableAutonomousImplementation) {
@@ -71,6 +77,12 @@ export function evaluateAutonomy(user: User, item: SpecItem, requestedDryRun: bo
   }
   if (requestedDryRun || user.preferences.dryRunFirst) {
     return { autoImplement: true, dryRun: true, reason: 'Preview requested — nothing will be changed.' };
+  }
+  // An explicit confirmation is the "yes, really" the trust dial asks for. It
+  // applies to this item on this run only — the posture itself is untouched, so
+  // the next sensitive item is held exactly as this one was.
+  if (confirmed) {
+    return { autoImplement: true, dryRun: false, reason: 'You confirmed this item.' };
   }
 
   const posture: TrustPosture = user.preferences.trustPosture;

@@ -25,6 +25,37 @@ function schemaPath(): string {
 
 let instance: Db | null = null;
 
+/**
+ * Columns added to existing tables after the first release.
+ *
+ * `schema.sql` uses CREATE TABLE IF NOT EXISTS, so a database created by an
+ * earlier version keeps its original column set — new tables appear but new
+ * columns do not. SQLite has no `ADD COLUMN IF NOT EXISTS`, so each addition is
+ * applied only when `PRAGMA table_info` says it is missing. Every entry must
+ * carry a default or be nullable: existing rows are not rewritten.
+ */
+const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
+  { table: 'jobs', column: 'input_kind', definition: "TEXT NOT NULL DEFAULT 'link'" },
+  { table: 'jobs', column: 'body_text', definition: 'TEXT' },
+  { table: 'jobs', column: 'triage_verdict', definition: 'TEXT' },
+  { table: 'jobs', column: 'value_score', definition: 'REAL' },
+  { table: 'jobs', column: 'domains', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'spec_items', column: 'domain', definition: "TEXT NOT NULL DEFAULT 'ai_workflow'" },
+  { table: 'spec_items', column: 'personalized_on', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'specs', column: 'domains', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'specs', column: 'proposed_facts', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'runs', column: 'confirmed_item_ids', definition: "TEXT NOT NULL DEFAULT '[]'" },
+];
+
+function migrate(db: Db): void {
+  for (const { table, column, definition } of ADDED_COLUMNS) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (columns.length === 0) continue; // table not created yet — schema.sql owns it
+    if (columns.some((c) => c.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function openDatabase(filePath?: string): Db {
   const target = filePath ?? config().databasePath;
   if (target !== ':memory:') fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -36,6 +67,7 @@ export function openDatabase(filePath?: string): Db {
   // and the API share one file.
   db.pragma('busy_timeout = 5000');
   db.exec(fs.readFileSync(schemaPath(), 'utf8'));
+  migrate(db);
   return db;
 }
 

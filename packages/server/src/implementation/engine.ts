@@ -72,7 +72,12 @@ export async function executeRun(runId: string): Promise<void> {
       continue;
     }
 
-    const decisionForItem = evaluateAutonomy(user, item, run.dryRun);
+    const decisionForItem = evaluateAutonomy(
+      user,
+      item,
+      run.dryRun,
+      run.confirmedItemIds.includes(item.itemId),
+    );
     if (!decisionForItem.autoImplement) {
       results.push({
         itemId: item.itemId,

@@ -1,8 +1,9 @@
 # AI Enhancement App
 
-Share a social post while you're scrolling. Get back a plain-English summary, an
-itemised plan, and — for the items you approve — the work actually done, filed
-into a folder on your desktop.
+Capture anything you run into — a link, a thought you type, something you
+overheard and dictate, a photo of a page. Get back routes you could take,
+chosen against what the app knows about *you*, and — for the ones you approve —
+the work actually done, filed into a folder on your desktop.
 
 This is a working implementation of the **AI Enhancement App** described in the
 [Business Requirements Document](docs/AI_Enhancement_App_BRD.docx) and
@@ -14,17 +15,46 @@ This is a working implementation of the **AI Enhancement App** described in the
 
 ## The problem it solves
 
-Discovery happens in *consume mode* — a good Claude tip scrolls past at 11pm.
-Acting on it needs *work mode* — sitting down, re-watching, translating advice
-into setup. The two almost never coincide, so the saved link becomes a
-placeholder for a good intention that decays.
+Discovery happens in *consume mode* — a good idea scrolls past at 11pm, or
+someone mentions a book while you are getting coffee. Acting on it needs *work
+mode*: sitting down, re-reading, translating advice into setup. The two almost
+never coincide, so the saved link becomes a placeholder for a good intention
+that decays.
 
 This closes the gap: one tap at the moment of discovery, one keep-or-skip
 decision later, and the machine does the rest.
 
 ```
-capture → understand → analyse & spec → notify → review & decide → implement → file artifacts
+capture → understand → triage → plan against your profile → review routes → implement → file artifacts
 ```
+
+### What makes it more than a summarizer
+
+The app holds a **life context graph** — what you own, what you subscribe to,
+how you prefer to read, what you are working towards. Every plan is written
+against it, so the same book recommendation becomes *"get the audiobook, you
+have an unused Audible credit and a 40-minute drive"* rather than *"consider
+reading this book"*.
+
+Three properties follow from that, and each is enforced rather than intended:
+
+- **Nothing is assumed about you.** Facts the analyzer notices while reading a
+  capture are queued as proposals and stay out of every prompt until you accept
+  them. A guess can never overwrite something you stated.
+- **Personalization is auditable.** An item that claims "because you prefer X"
+  must name a profile key you actually hold, or the claim is dropped before it
+  reaches the screen.
+- **The last step stays yours.** No item type can complete a purchase or send a
+  message, because no such permission scope exists to grant. `acquire_media`
+  prepares an order, `contact_person` writes a draft, `financial_review` writes
+  questions.
+
+### What it costs to use
+
+Capturing is cheap on purpose. A cheap triage pass reads every capture and
+decides whether a full plan is worth the spend; entertainment stops there at
+zero cost, and anything it rates below your threshold rests one tap away under
+**Plan this**. Only what matters pays for the expensive pass.
 
 ---
 
@@ -62,6 +92,8 @@ npm run dev     # API on :4000, PWA on :5173
 | `yt-dlp` on `PATH` | Author captions, auto-captions and audio download — the cleanest, highest-fidelity extraction path |
 | `ffmpeg` on `PATH` | Frame sampling so on-screen text in videos gets read |
 | `ENABLE_BROWSER_AGENT=true` + `npm i playwright` | Renders JavaScript-heavy pages as a last resort |
+| `AUTO_PLAN_THRESHOLD=0.55` | How good a capture must look before it is planned without asking. `0` plans everything, `1.01` plans nothing automatically |
+| `TRIAGE_MODEL=…` | Model for the cheap first pass. Defaults to the fast model; this is the call that runs on *every* capture |
 
 Every one of these is optional and independently useful. The **Settings** screen
 shows exactly which are live on your deployment, so the app is always honest
@@ -133,8 +165,11 @@ Past that gate, the **trust dial** decides what happens:
 | Posture | Behaviour |
 | --- | --- |
 | Ask me every time | Approval alone never runs anything |
-| Just do the safe ones *(default)* | Skills, instructions and generated files run on approval; schedules, downloads and connectors ask again |
+| Just do the safe ones *(default)* | Skills, instructions, habits and generated files run on approval; schedules, orders, drafts and connectors ask again |
 | Just do it | Everything you approve runs immediately |
+
+When the dial holds something, **Yes, run it** releases that item on that run
+only — confirming one purchase never loosens the posture for the next.
 
 Plus a **Preview** button that computes what would change without changing it,
 an **Undo** on anything reversible, and a run log recording every action.
@@ -157,8 +192,17 @@ Stated plainly, because both source documents are explicit about it:
 - **It does not circumvent anything.** No paywalls, DRM, private-account gates or
   rate-limit evasion. It only requests what a platform serves to a signed-out
   viewer. Coverage of private or protected content is limited by design.
-- **It does not act outside your own environment.** Autonomous implementation is
-  scoped to your AI setup and connected tools.
+- **It never spends your money or speaks for you.** Items that touch commerce
+  prepare an order and hand you the link; items that touch people write a draft
+  you send yourself. There is no permission scope in the system that completes a
+  purchase or sends a message, so no approval — however permissive — can reach
+  one.
+- **It does not give financial, medical or legal advice.** A `financial_review`
+  item produces a checklist of questions to take to your own accounts or a
+  professional. It never reads an account and never moves money.
+- **It does not build a profile of you behind your back.** Everything it infers
+  is shown to you for confirmation first, and the whole graph is visible and
+  deletable on the **You** tab.
 
 ---
 
@@ -179,8 +223,8 @@ Stated plainly, because both source documents are explicit about it:
 ```
 packages/
 ├── shared/          types, URL/folder-naming rules, markdown renderer
-├── server/          API, orchestrator, ingestion, analysis, implementation engine
-├── web/             the PWA — capture, review, digest, settings
+├── server/          API, orchestrator, ingestion, triage, analysis, implementation engine
+├── web/             the PWA — capture, profile, review, digest, settings
 └── desktop-bridge/  dependency-free CLI that syncs folders to your desktop
 docs/                architecture, API, deployment, traceability, source documents
 scripts/             icon generation
@@ -192,11 +236,19 @@ scripts/             icon generation
 npm test
 ```
 
-77 tests covering the extraction waterfall (captioned video, rolling-window
+116 tests covering the extraction waterfall (captioned video, rolling-window
 auto-captions, silent carousels, audio-only clips), analyzer fidelity including
-the "nothing actionable" case, the full capture → spec → approve → implement
-loop, per-user isolation, path traversal, scope containment, dry-run, budgets
-and audit completeness.
+the "nothing actionable" case, the full capture → triage → plan → approve →
+implement loop, per-user isolation, path traversal, scope containment, dry-run,
+budgets and audit completeness.
+
+The personalization layer carries its own suite: that an inferred fact never
+overwrites a stated one and never reaches a prompt unconfirmed, that the profile
+brief stays inside its token budget, that triage refuses to let a `no_action`
+verdict through the auto-plan gate, that no item type holds a scope capable of
+spending money or sending a message, that confirming a held item leaves the
+trust posture untouched, and that the generated n8n workflow imports as a
+connected graph with unique node ids.
 
 ## Licence
 

@@ -235,3 +235,51 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Life context graph
+--
+-- What the app knows about the person it is working for. Every fact carries its
+-- source and confidence, and inferred facts stay unconfirmed until the user
+-- accepts them — the analyzer only ever reads confirmed rows, so the system
+-- cannot quietly assemble a picture of someone they did not agree to.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS profile_facts (
+  fact_id    TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  category   TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  detail     TEXT,
+  source     TEXT NOT NULL DEFAULT 'user_stated',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  confirmed  INTEGER NOT NULL DEFAULT 1,
+  -- Set when the fact was proposed while analysing a capture.
+  job_id     TEXT,
+  evidence   TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  -- One value per key per user: re-stating a fact updates it rather than
+  -- accumulating contradictory copies the analyzer would have to choose between.
+  UNIQUE (user_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_facts_user ON profile_facts(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_facts_pending ON profile_facts(user_id, confirmed);
+
+-- Routes through one capture. A spec with no pathway rows renders as a flat
+-- item list, which is what a single-option capture produces.
+CREATE TABLE IF NOT EXISTS pathways (
+  pathway_id  TEXT PRIMARY KEY,
+  spec_id     TEXT NOT NULL REFERENCES specs(spec_id) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  stance      TEXT NOT NULL,
+  rationale   TEXT NOT NULL,
+  grounded_in_facts TEXT NOT NULL DEFAULT '[]',
+  estimated_minutes INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL NOT NULL DEFAULT 0,
+  item_ids    TEXT NOT NULL DEFAULT '[]',
+  recommended INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pathways_spec ON pathways(spec_id, ordinal);

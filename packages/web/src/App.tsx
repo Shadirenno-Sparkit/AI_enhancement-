@@ -8,12 +8,16 @@ import { Auth } from './pages/Auth';
 import { Capture } from './pages/Capture';
 import { Digest } from './pages/Digest';
 import { Library } from './pages/Library';
+import { Profile } from './pages/Profile';
 import { Review } from './pages/Review';
 import { Settings } from './pages/Settings';
 
 const TABS = [
   { path: '/library', icon: '📥', label: 'Inbox' },
   { path: '/capture', icon: '＋', label: 'Capture' },
+  // Sits between capture and review deliberately: what the app knows about you
+  // is what makes the difference between a summary and a recommendation.
+  { path: '/profile', icon: '👤', label: 'You' },
   { path: '/digest', icon: '📊', label: 'Digest' },
   { path: '/settings', icon: '⚙︎', label: 'Settings' },
 ];
@@ -190,6 +194,10 @@ function Router({
     );
   }
 
+  if (route.startsWith('/profile')) {
+    return <Profile />;
+  }
+
   if (route.startsWith('/digest')) {
     return <Digest onOpen={(jobId) => navigate(`/job/${jobId}`)} />;
   }
@@ -206,7 +214,7 @@ function Router({
     );
   }
 
-  return <Library onOpen={(entry) => navigate(`/job/${entry.jobId}`)} />;
+  return <Library onOpen={(entry) => navigate(`/job/${entry.jobId}`)} toast={toast} />;
 }
 
 /**

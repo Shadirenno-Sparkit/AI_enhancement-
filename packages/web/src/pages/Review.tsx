@@ -1,20 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { DecisionChoice, ItemResult, ItemType, Provenance } from '@aiapp/shared';
-import { PLATFORM_LABELS } from '@aiapp/shared';
+import type { DecisionChoice, ItemResult, Pathway, Provenance } from '@aiapp/shared';
+import { ITEM_TYPE_LABELS, PATHWAY_STANCE_LABELS, PLATFORM_LABELS } from '@aiapp/shared';
 import { api, type ReviewItem, type SpecView } from '../api';
 import { Badge, Disclosure, Markdown, Notice, Progress, Spinner, relativeTime } from '../components/ui';
 import { useAsync } from '../hooks';
-
-const TYPE_LABELS: Record<ItemType, string> = {
-  create_skill: 'Reusable skill',
-  set_instruction: 'Standing instruction',
-  schedule_task: 'Scheduled routine',
-  connect_tool: 'Connect a tool',
-  download_file: 'Download',
-  generate_file: 'Generated file',
-  configure_setting: 'Setting change',
-  run_command: 'Command',
-};
 
 const PROVENANCE_LABELS: Record<Provenance, string> = {
   post_description: 'post caption',
@@ -230,13 +219,33 @@ function SpecReview({
 
       {spec.noActionableItems || spec.items.length === 0 ? (
         <Notice kind="info">
-          No actionable items were found in this post — nothing was invented to fill the gap.
+          Nothing actionable was found here — nothing was invented to fill the gap.
         </Notice>
       ) : (
         <>
+          {spec.pathways.length > 1 ? (
+            <PathwayChooser
+              pathways={spec.pathways}
+              itemsById={new Map(spec.items.map((item) => [item.itemId, item]))}
+              disabled={submitting}
+              onChoose={(pathway) => {
+                // Picking a route pre-selects its items and forgoes the rest.
+                // It stages the choice rather than submitting, so the user can
+                // still amend an individual item before committing.
+                const onRoute = new Set(pathway.itemIds);
+                setSelection(
+                  Object.fromEntries(
+                    spec.items.map((item) => [item.itemId, onRoute.has(item.itemId) ? 'approve' : 'forgo']),
+                  ),
+                );
+                toast(`“${pathway.label}” selected — review below, then confirm.`);
+              }}
+            />
+          ) : null}
+
           <div className="section-head">
             <h2>
-              {spec.items.length} proposed improvement{spec.items.length === 1 ? '' : 's'}
+              {spec.items.length} thing{spec.items.length === 1 ? '' : 's'} you could do
             </h2>
             {undecided.length > 0 ? (
               <div className="btn-row">
@@ -303,7 +312,7 @@ function SpecReview({
         </>
       )}
 
-      {run ? <RunResults run={run} /> : null}
+      {run ? <RunResults run={run} spec={spec} onChanged={onChanged} toast={toast} /> : null}
 
       <h2>Technical spec</h2>
       <div className="card">
@@ -357,7 +366,7 @@ function ItemCard({
           </p>
 
           <div className="badge-row">
-            <Badge tone="accent">{TYPE_LABELS[item.type]}</Badge>
+            <Badge tone="accent">{ITEM_TYPE_LABELS[item.type]}</Badge>
             <Badge>{item.effort} effort</Badge>
             <Badge tone={item.impact === 'high' ? 'success' : 'default'}>{item.impact} impact</Badge>
             {item.riskTier !== 'safe' ? <Badge tone="warning">{item.riskTier}</Badge> : null}
@@ -449,9 +458,23 @@ function ItemCard({
   );
 }
 
-function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
+function RunResults({
+  run,
+  spec,
+  onChanged,
+  toast,
+}: {
+  run: SpecView['run'];
+  spec: SpecView['spec'];
+  onChanged: () => void;
+  toast: (message: string) => void;
+}): JSX.Element | null {
+  const [confirming, setConfirming] = useState(false);
   if (!run) return null;
   const active = run.items.filter((item) => item.status !== 'skipped');
+  // Items the trust dial approved but held. Releasing them is a separate,
+  // explicit act — not a re-approval.
+  const heldBack = run.items.filter((item) => item.status === 'needs_input');
 
   return (
     <>
@@ -469,6 +492,36 @@ function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
         </p>
 
         {active.length === 0 ? <p className="muted">Nothing ran.</p> : null}
+
+        {heldBack.length > 0 ? (
+          <div className="confirm-strip">
+            <p style={{ margin: 0, fontSize: 14 }}>
+              <strong>
+                {heldBack.length} item{heldBack.length === 1 ? '' : 's'} waiting on you.
+              </strong>{' '}
+              Your trust setting holds higher-risk items until you say yes to them specifically.
+            </p>
+            <button
+              type="button"
+              className="btn btn--sm"
+              disabled={confirming}
+              onClick={async () => {
+                setConfirming(true);
+                try {
+                  await api.confirmItems(spec.specId, heldBack.map((item) => item.itemId));
+                  toast(`Running ${heldBack.length} confirmed item${heldBack.length === 1 ? '' : 's'}…`);
+                  onChanged();
+                } catch (err) {
+                  toast(err instanceof Error ? err.message : 'Could not confirm those.');
+                } finally {
+                  setConfirming(false);
+                }
+              }}
+            >
+              {confirming ? 'Confirming…' : `Yes, run ${heldBack.length === 1 ? 'it' : 'them'}`}
+            </button>
+          </div>
+        ) : null}
 
         {active.map((item) => (
           <div key={item.itemId} style={{ padding: '10px 0', borderTop: '1px solid var(--border)' }}>
@@ -559,4 +612,103 @@ function resultTone(status: ItemResult['status']): 'success' | 'warning' | 'dang
     default:
       return 'default';
   }
+}
+
+
+/**
+ * The route picker.
+ *
+ * The same capture can usually be acted on more than one way — buy the book,
+ * read a summary, or turn its argument into a weekly routine. Showing those as
+ * competing routes rather than one flat checklist is the difference between
+ * "here is everything it said" and "here is what I would do if I were you".
+ *
+ * The recommended route leads, and its rationale names the facts it leaned on,
+ * so a personalized suggestion can be checked rather than merely trusted.
+ */
+function PathwayChooser({
+  pathways,
+  itemsById,
+  disabled,
+  onChoose,
+}: {
+  pathways: Pathway[];
+  itemsById: Map<string, ReviewItem>;
+  disabled: boolean;
+  onChoose: (pathway: Pathway) => void;
+}): JSX.Element {
+  // Recommended first: it is the answer to "just tell me what to do".
+  const ordered = [...pathways].sort((a, b) => Number(b.recommended) - Number(a.recommended));
+
+  return (
+    <section className="pathways">
+      <div className="section-head">
+        <h2>How you could go about it</h2>
+        <span className="faint">Pick one, or mix and match below</span>
+      </div>
+
+      <div className="pathway-grid">
+        {ordered.map((pathway) => {
+          const items = pathway.itemIds
+            .map((itemId) => itemsById.get(itemId))
+            .filter((item): item is ReviewItem => Boolean(item));
+
+          return (
+            <article
+              key={pathway.pathwayId}
+              className={`pathway-card${pathway.recommended ? ' is-recommended' : ''}`}
+            >
+              <header className="pathway-head">
+                <div className="pathway-titles">
+                  <h3>{pathway.label}</h3>
+                  <Badge>{PATHWAY_STANCE_LABELS[pathway.stance]}</Badge>
+                </div>
+                {pathway.recommended ? <Badge tone="success">Recommended for you</Badge> : null}
+              </header>
+
+              {pathway.rationale ? <p className="pathway-why">{pathway.rationale}</p> : null}
+
+              {pathway.groundedInFacts.length > 0 ? (
+                <p className="faint pathway-grounds">
+                  Because you told us about:{' '}
+                  {pathway.groundedInFacts.map((fact) => fact.replace(/_/g, ' ')).join(', ')}
+                </p>
+              ) : null}
+
+              <ul className="pathway-items">
+                {items.map((item) => (
+                  <li key={item.itemId}>
+                    <span className="pathway-item-type">{ITEM_TYPE_LABELS[item.type]}</span>
+                    {item.title}
+                  </li>
+                ))}
+              </ul>
+
+              <footer className="pathway-foot">
+                <span className="faint">
+                  {pathway.estimatedMinutes > 0 ? `~${formatMinutes(pathway.estimatedMinutes)}` : 'No time from you'}
+                  {' · '}
+                  {pathway.estimatedCostUsd > 0 ? `$${pathway.estimatedCostUsd.toFixed(2)}` : 'Free'}
+                </span>
+                <button
+                  type="button"
+                  className={`btn btn--sm${pathway.recommended ? '' : ' btn--ghost'}`}
+                  disabled={disabled}
+                  onClick={() => onChoose(pathway)}
+                >
+                  Choose this
+                </button>
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function formatMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round((minutes / 60) * 10) / 10;
+  return `${hours} hr${hours === 1 ? '' : 's'}`;
 }

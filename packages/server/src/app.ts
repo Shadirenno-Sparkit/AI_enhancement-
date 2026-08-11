@@ -6,6 +6,8 @@ import express, { type Express } from 'express';
 import { config } from './config.js';
 import { artifactsRouter } from './api/routes/artifacts.js';
 import { authRouter } from './api/routes/auth.js';
+import { capturesRouter } from './api/routes/captures.js';
+import { profileRouter } from './api/routes/profile.js';
 import { digestRouter } from './api/routes/digest.js';
 import { jobsRouter } from './api/routes/jobs.js';
 import { linksRouter } from './api/routes/links.js';
@@ -49,6 +51,10 @@ export function createApp(): Express {
     }),
   );
 
+  // A voice memo or photo arrives base64-encoded, which is ~33% larger than the
+  // 10 MB the capture route itself enforces. The larger parser is mounted only
+  // on that path, so every other endpoint keeps the tight 1 MB ceiling.
+  app.use('/v1/captures', express.json({ limit: '16mb' }));
   app.use(express.json({ limit: '1mb' }));
   // The PWA's share target posts a form, not JSON.
   app.use(express.urlencoded({ extended: false, limit: '1mb' }));
@@ -103,6 +109,8 @@ export function createApp(): Express {
   app.use('/v1/auth', authRouter);
   app.use('/v1/links', linksRouter);
   app.use('/v1/library', linksRouter);
+  app.use('/v1/captures', capturesRouter);
+  app.use('/v1/profile', profileRouter);
   app.use('/v1/jobs', jobsRouter);
   app.use('/v1/specs', specsRouter);
   app.use('/v1/runs', runsRouter);

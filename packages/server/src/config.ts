@@ -78,6 +78,11 @@ export interface Config {
   maxAsrSecondsPerLink: number;
   enableAutonomousImplementation: boolean;
   defaultTrustPosture: TrustPosture;
+  /** Triage value score at or above which a capture is planned without asking. */
+  autoPlanThreshold: number;
+  /** Model used for the cheap triage pass; falls back to the fast model. */
+  triageModel: string;
+  enableTriage: boolean;
   workerConcurrency: number;
   notifyChannels: string[];
   smtpUrl: string;
@@ -139,6 +144,11 @@ export function loadConfig(): Config {
     maxAsrSecondsPerLink: num('MAX_ASR_SECONDS_PER_LINK', 900),
     enableAutonomousImplementation: bool('ENABLE_AUTONOMOUS_IMPLEMENTATION', true),
     defaultTrustPosture,
+    // 0.55 plans roughly the top third of captures automatically and parks the
+    // rest one tap away. Raise it to spend less, lower it to plan more eagerly.
+    autoPlanThreshold: Math.max(0, Math.min(1.01, num('AUTO_PLAN_THRESHOLD', 0.55))),
+    triageModel: str('TRIAGE_MODEL', str('ANTHROPIC_FAST_MODEL', 'claude-haiku-4-5-20251001')),
+    enableTriage: bool('ENABLE_TRIAGE', true),
     workerConcurrency: num('WORKER_CONCURRENCY', 2),
     notifyChannels: list('NOTIFY_CHANNELS', ['log']),
     smtpUrl: str('SMTP_URL', ''),

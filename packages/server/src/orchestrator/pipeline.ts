@@ -1,9 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Job } from '@aiapp/shared';
-import { PLATFORM_LABELS, resolvePlatform } from '@aiapp/shared';
+import type { InsightSegment, Job, TriageResult } from '@aiapp/shared';
+import { INPUT_KIND_LABELS, PLATFORM_LABELS, resolvePlatform } from '@aiapp/shared';
 import { config } from '../config.js';
 import { analyze } from '../analysis/analyzer.js';
+import { shouldAutoPlan, triage } from '../analysis/triage.js';
+import { llm } from '../providers/llm.js';
+import { buildLifeContext, proposeFacts } from '../repo/profile.js';
 import {
   ensureJobFolder,
   jobFolder,
@@ -19,7 +22,7 @@ import { normalize } from '../ingestion/normalizer.js';
 import { runTranscriptWaterfall } from '../ingestion/transcript.js';
 import { notifySpecReady } from '../notifications/notify.js';
 import { audit } from '../repo/audit.js';
-import { cacheGet, cacheSet, saveInsightSource } from '../repo/insights.js';
+import { cacheGet, cacheSet, getInsightSourceByJob, saveInsightSource } from '../repo/insights.js';
 import { addJobCost, getJobUnscoped, updateJob } from '../repo/jobs.js';
 import { createSpec } from '../repo/specs.js';
 import { getUserById, recordUsage } from '../repo/users.js';
@@ -33,6 +36,11 @@ const log = createLogger('pipeline');
 export interface ProcessOptions {
   /** Skip the extraction cache and use the heavier path. POST /links/{id}/rerun. */
   force?: boolean;
+  /**
+   * Run the deep plan regardless of what triage scored it. Set when the user
+   * taps "Plan this" on a capture that was parked in AWAITING_PLAN.
+   */
+  forcePlan?: boolean;
 }
 
 /**
@@ -55,19 +63,25 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   }
 
   const cfg = config();
-  log.info('processing link', { jobId, platform: job.platform, url: job.normalizedUrl });
+  log.info('processing capture', { jobId, inputKind: job.inputKind, platform: job.platform });
 
   // ── RESOLVED ──────────────────────────────────────────────────────────────
-  const platform = resolvePlatform(job.url);
+  // Only a link needs resolving. A note, a dictated thought or a photo arrives
+  // carrying its own content and skips straight past the fetch waterfall.
+  const isLink = job.inputKind === 'link';
+  const platform = isLink ? resolvePlatform(job.url) : 'other';
   updateJob(jobId, {
     state: 'RESOLVED',
     platform,
-    statusMessage: `Recognised a ${PLATFORM_LABELS[platform]} link. Fetching the content…`,
+    statusMessage: isLink
+      ? `Recognised a ${PLATFORM_LABELS[platform]} link. Fetching the content…`
+      : `Reading your ${INPUT_KIND_LABELS[job.inputKind].toLowerCase()}…`,
   });
 
   // A provisional folder so every later stage has somewhere to write. It is
   // renamed once analysis produces a real title — see renameJobFolder below.
-  const provisionalTitle = job.title ?? `${PLATFORM_LABELS[platform]} post`;
+  const provisionalTitle =
+    job.title ?? (isLink ? `${PLATFORM_LABELS[platform]} post` : INPUT_KIND_LABELS[job.inputKind]);
   const folderName = job.folderName ?? (await ensureJobFolder({ ...job, platform }, provisionalTitle));
   updateJob(jobId, { folderName });
 
@@ -91,8 +105,31 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     failureReason?: string | null;
   };
 
-  let extraction: CachedExtraction | null = options.force ? null : cacheGet<CachedExtraction>(cacheKey);
-  if (extraction) {
+  let extraction: CachedExtraction | null =
+    options.force || !isLink ? null : cacheGet<CachedExtraction>(cacheKey);
+
+  if (!isLink) {
+    // Text the user supplied directly. It is verbatim by definition, so it
+    // enters as one full-confidence segment rather than going through a
+    // waterfall that has nothing to add.
+    const body = (job.bodyText ?? job.sharedText ?? '').trim();
+    const segments: InsightSegment[] = body
+      ? [{ order: 0, text: body, provenance: 'user_note', confidence: 1 }]
+      : [];
+    extraction = {
+      segments,
+      language: 'en',
+      durationSec: null,
+      vtt: null,
+      methodsUsed: segments.length > 0 ? ['user_note'] : [],
+      title: job.title ?? null,
+      author: null,
+      postDescription: null,
+      fetchMethods: [`direct_${job.inputKind}`],
+      failureReason: segments.length === 0 ? 'This capture arrived empty.' : null,
+    };
+    updateJob(jobId, { state: 'TRANSCRIBED' });
+  } else if (extraction) {
     log.info('reusing cached extraction', { jobId });
     updateJob(jobId, { state: 'TRANSCRIBED', statusMessage: 'Reused a previous extraction of this link.' });
   } else {
@@ -186,29 +223,155 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   updateJob(jobId, {
     state: 'NORMALIZED',
     statusMessage: normalized.lowConfidence
-      ? 'Content extracted, but confidence is low. Analysing it anyway…'
-      : 'Content extracted. Working out what it is recommending…',
+      ? 'Content extracted, but confidence is low. Sizing it up anyway…'
+      : 'Content extracted. Sizing up what it is worth…',
   });
 
-  // ── ANALYZED / SPEC_READY ─────────────────────────────────────────────────
-  const spent = getJobUnscoped(jobId)?.cost.usd ?? 0;
+  // ── TRIAGED (phase A) ─────────────────────────────────────────────────────
+  // The cheap pass. It decides whether this capture earns the expensive one,
+  // which is what makes capturing thirty things on a commute affordable.
+  const context = buildLifeContext(job.userId);
+  let triageResult: TriageResult | null = null;
+
+  if (cfg.enableTriage && !options.forcePlan) {
+    triageResult = await triage({
+      text: normalized.mergedText,
+      contextBrief: context.brief,
+      sourceLabel: isLink ? PLATFORM_LABELS[platform] : INPUT_KIND_LABELS[job.inputKind],
+    });
+
+    addJobCost(jobId, { modelTokens: triageResult.usage.modelTokens, usd: triageResult.usage.usd });
+    recordUsage(job.userId, { modelTokens: triageResult.usage.modelTokens, usd: triageResult.usage.usd });
+
+    updateJob(jobId, {
+      state: 'TRIAGED',
+      triageVerdict: triageResult.verdict,
+      valueScore: triageResult.valueScore,
+      domains: triageResult.domains,
+      statusMessage: triageResult.headline,
+    });
+    audit({
+      userId: job.userId,
+      jobId,
+      event: 'job.triaged',
+      detail: `${triageResult.verdict} · value ${triageResult.valueScore.toFixed(2)} · ${triageResult.engine}`,
+    });
+
+    // Nothing there. Stop before spending a planning call on entertainment.
+    if (triageResult.verdict === 'no_action') {
+      updateJob(jobId, { state: 'NO_ACTION', statusMessage: triageResult.headline });
+      await rebuildIndex(job.userId);
+      await notifySpecReady({
+        user,
+        job: getJobUnscoped(jobId)!,
+        itemCount: 0,
+        noContent: false,
+        reason: triageResult.headline,
+      });
+      return;
+    }
+
+    // Worth something, but not enough to plan unprompted. Park it with its
+    // headline so the user can spend the deep call themselves.
+    //
+    // The gate only applies when planning actually costs something. With no
+    // model configured the deep pass is the rule-based analyzer, which is free —
+    // parking a capture then would cost the user an extra tap and save nothing.
+    const planningCostsMoney = llm().live;
+    if (planningCostsMoney && !shouldAutoPlan(triageResult, user.preferences.autoPlanThreshold)) {
+      updateJob(jobId, {
+        state: 'AWAITING_PLAN',
+        statusMessage: `${triageResult.headline} Tap “Plan this” when you want the full plan.`,
+      });
+      audit({ userId: job.userId, jobId, event: 'job.parked', detail: 'below the auto-plan threshold' });
+      await rebuildIndex(job.userId);
+      await notifySpecReady({
+        user,
+        job: getJobUnscoped(jobId)!,
+        itemCount: 0,
+        noContent: false,
+        reason: triageResult.headline,
+      });
+      return;
+    }
+  }
+
+  await planJob(jobId, { triageResult });
+}
+
+/**
+ * Phase B — the deep, personalized plan (spec §4.4b).
+ *
+ * Split out from `processJob` because it is the expensive half and is entered
+ * two ways: automatically when triage rates a capture highly, or on demand when
+ * the user taps "Plan this" on something that was parked. It reads the insight
+ * source that extraction already persisted, so re-planning never re-fetches or
+ * re-transcribes anything.
+ */
+export async function planJob(
+  jobId: string,
+  options: { triageResult?: TriageResult | null } = {},
+): Promise<void> {
+  const job = getJobUnscoped(jobId);
+  if (!job) return;
+  const user = getUserById(job.userId);
+  if (!user) return;
+
+  const cfg = config();
+  const folderName = job.folderName;
+  if (!folderName) {
+    updateJob(jobId, { state: 'FAILED', statusMessage: 'This capture has no artifact folder.' });
+    return;
+  }
+
+  const source = getInsightSourceByJob(jobId);
+  if (!source || source.segments.length === 0) {
+    updateJob(jobId, {
+      state: 'NO_ACTION',
+      statusMessage: 'There is no extracted content to plan against.',
+    });
+    await rebuildIndex(job.userId);
+    return;
+  }
+
+  const platform = job.platform;
+  const isLink = job.inputKind === 'link';
+
+  updateJob(jobId, {
+    state: 'ANALYZED',
+    statusMessage: 'Working out what you should do about this…',
+  });
+
+  const spent = job.cost.usd;
   if (!withinLinkBudget(spent)) {
-    const message = `This link hit the per-link budget of $${cfg.maxUsdPerLink.toFixed(2)} during extraction, so analysis was skipped.`;
+    const message = `This capture hit the per-item budget of $${cfg.maxUsdPerLink.toFixed(2)} during extraction, so planning was skipped.`;
     updateJob(jobId, { state: 'NEEDS_INPUT', statusMessage: message });
     audit({ userId: job.userId, jobId, event: 'budget.link_exceeded', detail: message });
     await rebuildIndex(job.userId);
     return;
   }
 
+  // Rebuild the merged text from the stored segments in the same tagged form
+  // the analyzer expects.
+  const mergedText = source.segments
+    .map((segment) => `[${segment.order}] (${segment.provenance}) ${segment.text}`)
+    .join('\n');
+
+  const context = buildLifeContext(job.userId);
   const analysis = await analyze({
     userId: job.userId,
-    mergedText: normalized.mergedText,
+    mergedText,
     platform,
+    inputKind: job.inputKind,
     url: job.url,
-    postTitle: extraction.title,
-    author: extraction.author,
-    lowConfidence: normalized.lowConfidence,
-    overallConfidence: normalized.overallConfidence,
+    postTitle: job.title,
+    author: null,
+    lowConfidence: source.lowConfidence,
+    overallConfidence: source.overallConfidence,
+    lifeContext: context,
+    triage: options.triageResult ?? null,
+    mutedDomains: user.preferences.mutedDomains,
+    learnAboutMe: user.preferences.learnAboutMe,
   });
 
   addJobCost(jobId, { modelTokens: analysis.usage.modelTokens, usd: analysis.usage.usd });
@@ -216,7 +379,12 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
 
   // Now that there is a real title, give the folder a browsable name (BR-F3).
   const finalFolder = await renameJobFolder(job.userId, folderName, job.createdAt, platform, analysis.title);
-  updateJob(jobId, { state: 'ANALYZED', title: analysis.title, folderName: finalFolder });
+  updateJob(jobId, {
+    state: 'ANALYZED',
+    title: analysis.title,
+    folderName: finalFolder,
+    domains: analysis.domains,
+  });
 
   const spec = createSpec({
     jobId,
@@ -226,26 +394,40 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     technicalSpec: analysis.technicalSpec,
     noActionableItems: analysis.noActionableItems,
     items: analysis.items,
+    pathways: analysis.pathways,
+    domains: analysis.domains,
+    proposedFacts: analysis.proposedFacts,
   });
+
+  // Anything the analyzer noticed about the person is queued for confirmation,
+  // never applied. The profile only grows when the user says it may.
+  if (analysis.proposedFacts.length > 0 && user.preferences.learnAboutMe) {
+    const added = proposeFacts(job.userId, jobId, analysis.proposedFacts);
+    if (added > 0) {
+      audit({ userId: job.userId, jobId, event: 'profile.facts_proposed', detail: `${added} pending` });
+    }
+  }
 
   const jobWithTitle = getJobUnscoped(jobId)!;
   await writeSummary(job.userId, finalFolder, jobWithTitle, spec);
   await writeSpec(job.userId, finalFolder, spec);
 
   const finalState = spec.items.length === 0 ? 'NO_ACTION' : 'SPEC_READY';
+  const routeNote =
+    spec.pathways.length > 1 ? ` across ${spec.pathways.length} routes` : '';
   updateJob(jobId, {
     state: finalState,
     statusMessage:
       spec.items.length === 0
-        ? 'No actionable items were found in this post.'
-        : `${spec.items.length} improvement${spec.items.length === 1 ? '' : 's'} ready for you to review.`,
+        ? `Nothing actionable was found in this ${isLink ? 'post' : INPUT_KIND_LABELS[job.inputKind].toLowerCase()}.`
+        : `${spec.items.length} thing${spec.items.length === 1 ? '' : 's'} you could do${routeNote}.`,
   });
 
   audit({
     userId: job.userId,
     jobId,
     event: 'job.spec_ready',
-    detail: `${spec.items.length} items via ${analysis.analyzer} analyzer`,
+    detail: `${spec.items.length} items · ${spec.pathways.length} pathways · ${analysis.analyzer} analyzer`,
   });
 
   await rebuildIndex(job.userId);
@@ -257,7 +439,12 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     specId: spec.specId,
   });
 
-  log.info('spec ready', { jobId, items: spec.items.length, analyzer: analysis.analyzer });
+  log.info('spec ready', {
+    jobId,
+    items: spec.items.length,
+    pathways: spec.pathways.length,
+    analyzer: analysis.analyzer,
+  });
 }
 
 /** Marks a job failed after the queue exhausted its retries. */
