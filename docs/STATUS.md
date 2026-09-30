@@ -2,7 +2,7 @@
 
 What is built, what is deliberately not, and what to do next.
 
-Last updated: 2026-07-30.
+Last updated: 2026-09-29.
 
 ---
 
@@ -17,6 +17,7 @@ share/paste a link
   → transcript waterfall (captions → ASR → OCR → page text)
   → normalized into one InsightSource with provenance + confidence
   → analysed into a summary and typed, approvable items
+    (or a grounded application experiment when the source is not instructional)
   → notified
   → per-item approve / skip / defer
   → approved items implemented inside a permission sandbox
@@ -36,9 +37,9 @@ Against the phasing in BRD §16 / spec §17:
 
 | Phase | Target | State |
 | --- | --- | --- |
-| **P0 — Personal MVP** | PWA + paste, YouTube + one of IG/TikTok, captions + ASR, summary + itemised spec, manual approval, safe autonomous items, desktop foldering | **Complete**, and past it — all six platforms, all eight item types |
-| **P1 — Robust single-user** | Multimodal OCR, X/LinkedIn/Facebook, trust dial, dry-run, run logs, browser automation, native app + push | **Complete except the native app.** Push is implemented (VAPID); the native client is deferred |
-| **P2 — Broadly shareable** | Accounts, isolation, per-user connectors and destinations, cost controls, quotas, privacy and deletion, value-adds | **Complete except org/team grouping and store distribution.** Weekly digest, duplicate detection and preference learning are in |
+| **P0 — Personal MVP** | PWA + paste, media extraction, useful spec, approval, implementation, desktop filing | **In progress.** Capture/review are strong; local private-content sign-in now exists, but several implementation types still stop at an artifact or reminder. |
+| **P1 — Robust single-user** | Multimodal OCR, broad source coverage, trust controls, browser automation, push | **In progress.** Core controls exist; live provider setup and a real platform test matrix are still required. |
+| **P2 — Broadly shareable** | Accounts, isolation, real connectors, cost controls, privacy, operations | **Not complete.** Account isolation and user-scoped extraction caches are implemented. Hosted social auth, connector OAuth, managed secrets and production operations remain release blockers. |
 
 ## Deliberately not built
 
@@ -49,26 +50,29 @@ Each of these is a decision, not an omission. Full reasoning in
   without store review. The backend is client-agnostic, so a React Native client
   is additive.
 - **Connector OAuth flows.** The model, encrypted storage and prerequisite
-  matching exist; per-provider OAuth needs registered apps and callback URLs.
+  matching exist. The UI no longer marks a connector present with a fake secret;
+  each provider still needs a real registered app and callback flow.
 - **Team/organization accounts.** Marked *Could* / Phase 2 in both documents.
 - **Executing shell commands.** `run_command` prepares and explains; it does not
   run. Handing arbitrary shell to an autonomous loop is not a capability worth
   having here.
-- **Signing in on your behalf.** The browser agent extracts content; it does not
-  take custody of your credentials.
+- **Hosted social sign-in.** Local mode opens a headed browser and stores the
+  resulting session encrypted. A multi-tenant hosted service still needs an
+  isolated browser/session provider before this can be enabled safely.
 
 ## Known limitations
 
 Honest ones, worth knowing before relying on this:
 
-- **Instagram and TikTok need keys to do well.** Neither exposes a caption
-  track, so without `ASR_PROVIDER` and `VISION_PROVIDER` configured you get the
-  post caption and little else. The app says so plainly rather than degrading
-  silently.
+- **Instagram and TikTok need live media providers to do well.** Without ASR
+  and vision, audio and on-screen text cannot be understood. The job is now
+  marked as a processing/configuration failure rather than “no insight.”
 - **The offline analyzer is a genuine fallback, not a Claude substitute.** It
   reliably finds imperative, well-formed advice. It will miss a tip phrased
   obliquely, and it cannot author a rich skill body the way the model can.
-- **Private and age-gated content will not resolve.** By design.
+- **Private content works only where the connected account can view it and the
+  platform extractor accepts that session.** Deleted, DRM-protected or revoked
+  content remains a typed extraction failure.
 - **The scheduler fires notifications, it does not run arbitrary work.** A
   `schedule_task` item registers a real recurring task that reminds you at the
   right time; wiring a schedule to an *action* needs the connector for that
@@ -78,12 +82,12 @@ Honest ones, worth knowing before relying on this:
 
 ## Test coverage
 
-77 tests across four suites:
+92 tests across six suites:
 
 | Suite | Covers |
 | --- | --- |
-| `extraction.test.ts` | URL handling, subtitle parsing incl. rolling-window auto-captions, normalization and cross-source dedupe, confidence flagging, rule-based extraction incl. the "nothing actionable" case |
-| `pipeline.test.ts` | Capture → spec → approve → implement, artifact layout, folder naming, dedupe, carousel and audio-only paths, caching, idempotent reprocessing, zip export |
+| `extraction.test.ts` | URL handling, subtitle parsing incl. rolling-window auto-captions, normalization, confidence and rule-based extraction |
+| `pipeline.test.ts` | Capture → spec → approve → implement, artifact layout, carousel/audio paths, user-scoped caching, terminal-job retry and zip export |
 | `security.test.ts` | Auth, refresh rotation, enumeration resistance, rate limits, per-user isolation, path traversal, erasure, scope containment, trust dial, dry-run, failure isolation, audit completeness, SSRF and command blocklists, budgets |
 | `units.test.ts` | Cron parsing/next-run/description, zip structure, lenient JSON recovery, model-path analyzer incl. server-side scope assignment, markdown escaping |
 
@@ -95,15 +99,12 @@ npm test
 
 Roughly in order of value:
 
-1. **Add `ANTHROPIC_API_KEY`.** Single biggest quality jump — real insight
-   extraction and authored skill bodies rather than restated source text.
-2. **Add speech-to-text.** Unlocks Reels and TikToks, which is where most of
-   this content actually lives.
-3. **Run the desktop bridge.** Turns the artifacts into files on your machine
-   you can open, and gives you a second copy of everything.
-4. **Deploy behind HTTPS and install the PWA.** This is when it stops being a
-   web app and starts being the thing described in the BRD — one tap, mid-scroll.
-5. **Wire one real connector.** Whichever one your tips keep asking for, most
-   likely email or GitHub.
-6. **Then consider the native app**, if iOS share-sheet behaviour proves limiting
-   in practice.
+1. Configure a live model, speech-to-text and vision provider, then run a saved
+   public/private link matrix across every supported platform.
+2. Make the desktop bridge a verified action worker for real skills,
+   instructions and scheduled work.
+3. Implement the first real connector OAuth flow and remove that connector from
+   the release-blocker list only after token validation and an end-to-end action.
+4. Add extraction success/error metrics and alerts by platform before inviting
+   external users.
+5. Follow the staged release gates in [COMMERCIALIZATION.md](COMMERCIALIZATION.md).

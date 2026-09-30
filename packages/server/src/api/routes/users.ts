@@ -19,8 +19,16 @@ import {
 import { listScheduledTasks, setScheduledTaskEnabled, deleteScheduledTask } from '../../repo/schedules.js';
 import { deleteUserData, revokeAllRefreshTokens, updatePreferences, usageToday, usageTotal } from '../../repo/users.js';
 import { describeCron, isValidCron } from '../../implementation/cron.js';
+import {
+  cancelSocialSignIn,
+  completeSocialSignIn,
+  disconnectSocialAccount,
+  isSocialPlatform,
+  socialAccounts,
+  startSocialSignIn,
+} from '../../ingestion/social-auth.js';
 import { badRequest, notFound } from '../../util/errors.js';
-import { asyncHandler, currentUser, requireAuth } from '../middleware.js';
+import { asyncHandler, currentUser, rateLimit, requireAuth } from '../middleware.js';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth);
@@ -144,6 +152,75 @@ usersRouter.delete(
     const kind = String(req.params['kind']).toLowerCase();
     if (!deleteConnector(user.userId, kind)) throw notFound('No such connector.');
     audit({ userId: user.userId, event: 'connector.deleted', detail: kind });
+    res.status(204).end();
+  }),
+);
+
+// ─── Authenticated social content ───────────────────────────────────────────
+
+usersRouter.get(
+  '/me/social-accounts',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    res.json({ accounts: socialAccounts(user.userId), mode: config().socialAuthMode });
+  }),
+);
+
+usersRouter.post(
+  '/me/social-accounts/:platform/start',
+  rateLimit({ capacity: 5, refillPerSecond: 1 / 60, key: 'social-auth-start' }),
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const platform = String(req.params['platform']).toLowerCase();
+    if (!isSocialPlatform(platform)) throw badRequest('That social platform is not supported.');
+    try {
+      const session = await startSocialSignIn(user.userId, platform);
+      audit({ userId: user.userId, event: 'social_auth.started', detail: platform });
+      res.status(201).json(session);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : 'Could not start social sign-in.');
+    }
+  }),
+);
+
+usersRouter.post(
+  '/me/social-accounts/:platform/complete',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const platform = String(req.params['platform']).toLowerCase();
+    if (!isSocialPlatform(platform)) throw badRequest('That social platform is not supported.');
+    const parsed = z.object({ sessionId: z.string().min(10).max(200) }).safeParse(req.body);
+    if (!parsed.success) throw badRequest('A sign-in session is required.');
+    try {
+      await completeSocialSignIn(user.userId, platform, parsed.data.sessionId);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : 'Could not finish social sign-in.');
+    }
+    audit({ userId: user.userId, event: 'social_auth.connected', detail: platform });
+    res.json({ connected: true });
+  }),
+);
+
+usersRouter.post(
+  '/me/social-accounts/:platform/cancel',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const platform = String(req.params['platform']).toLowerCase();
+    if (!isSocialPlatform(platform)) throw badRequest('That social platform is not supported.');
+    const parsed = z.object({ sessionId: z.string().min(10).max(200) }).safeParse(req.body);
+    if (parsed.success) await cancelSocialSignIn(user.userId, parsed.data.sessionId);
+    res.status(204).end();
+  }),
+);
+
+usersRouter.delete(
+  '/me/social-accounts/:platform',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const platform = String(req.params['platform']).toLowerCase();
+    if (!isSocialPlatform(platform)) throw badRequest('That social platform is not supported.');
+    disconnectSocialAccount(user.userId, platform);
+    audit({ userId: user.userId, event: 'social_auth.disconnected', detail: platform });
     res.status(204).end();
   }),
 );

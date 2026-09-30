@@ -109,6 +109,7 @@ export function deleteUserData(userId: string, options: { keepAccount: boolean }
     database.prepare('DELETE FROM specs WHERE user_id = ?').run(userId);
     database.prepare('DELETE FROM runs WHERE user_id = ?').run(userId);
     database.prepare('DELETE FROM insight_sources WHERE user_id = ?').run(userId);
+    database.prepare('DELETE FROM extraction_cache WHERE user_id = ?').run(userId);
     database
       .prepare('DELETE FROM job_queue WHERE job_id IN (SELECT job_id FROM jobs WHERE user_id = ?)')
       .run(userId);

@@ -1,9 +1,13 @@
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ITEM_TYPE_SCOPES, renderMarkdown } from '@aiapp/shared';
 import { cronMatches, describeCron, isValidCron, nextRunFor, parseCron } from '../implementation/cron.js';
 import { buildZip } from '../util/zip.js';
 import { parseJsonLoose } from '../providers/llm.js';
 import { analyze } from '../analysis/analyzer.js';
+import { storageStateToNetscape } from '../ingestion/social-auth.js';
+import { openDatabase } from '../db/index.js';
 import { createHarness, clearProviderStubs, stubLlm, type Harness } from './harness.js';
 
 let harness: Harness;
@@ -78,6 +82,48 @@ describe('zip writer', () => {
     const archive = buildZip([]);
     expect(archive.readUInt32LE(0)).toBe(0x06054b50);
     expect(archive.byteLength).toBe(22);
+  });
+});
+
+describe('authenticated social sessions', () => {
+  it('converts an encrypted browser session into the cookie format yt-dlp consumes', () => {
+    const output = storageStateToNetscape({
+      cookies: [
+        {
+          name: 'sessionid',
+          value: 'private-session',
+          domain: '.instagram.com',
+          path: '/',
+          expires: 1_900_000_000,
+          secure: true,
+        },
+      ],
+      origins: [],
+    });
+
+    expect(output).toContain('.instagram.com\tTRUE\t/\tTRUE\t1900000000\tsessionid\tprivate-session');
+    expect(output).toContain('# Netscape HTTP Cookie File');
+  });
+});
+
+describe('database migrations', () => {
+  it('drops unowned legacy extraction cache rows when adding tenant ownership', () => {
+    const file = path.join(harness.dir, 'legacy.sqlite');
+    const legacy = new Database(file);
+    legacy.exec(
+      'CREATE TABLE extraction_cache (content_hash TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)',
+    );
+    legacy
+      .prepare('INSERT INTO extraction_cache (content_hash, payload, created_at) VALUES (?, ?, ?)')
+      .run('legacy', '{"private":"text"}', new Date().toISOString());
+    legacy.close();
+
+    const migrated = openDatabase(file);
+    const columns = migrated.pragma('table_info(extraction_cache)') as { name: string }[];
+    const count = migrated.prepare('SELECT COUNT(*) AS n FROM extraction_cache').get() as { n: number };
+    expect(columns.map((column) => column.name)).toContain('user_id');
+    expect(count.n).toBe(0);
+    migrated.close();
   });
 });
 
@@ -170,7 +216,7 @@ describe('analyzer with a model', () => {
     expect(result.items.length).toBeGreaterThan(0);
   });
 
-  it('honours a model saying there is nothing actionable', async () => {
+  it('creates a grounded application note when the model returns no direct action', async () => {
     const { userId } = await harness.signup();
     stubLlm(
       JSON.stringify({
@@ -190,8 +236,10 @@ describe('analyzer with a model', () => {
       overallConfidence: 0.9,
     });
 
-    expect(result.noActionableItems).toBe(true);
-    expect(result.items).toHaveLength(0);
+    expect(result.noActionableItems).toBe(false);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.type).toBe('generate_file');
+    expect(result.items[0]!.parameters['content']).toContain('POV: the code compiles first try');
   });
 });
 

@@ -147,13 +147,13 @@ export async function notifySpecReady(input: {
   const title = noContent
     ? `Couldn’t read “${label}”`
     : itemCount === 0
-      ? `Nothing actionable in “${label}”`
+      ? `Analysis needs a retry for “${label}”`
       : `Your spec from “${label}” is ready`;
 
   const body = noContent
     ? (input.reason ?? 'The content could not be retrieved.')
     : itemCount === 0
-      ? 'The post turned out to be commentary rather than advice, so nothing was proposed.'
+      ? 'No implementation path was generated. This is an analysis failure; re-run the link.'
       : `${itemCount} improvement${itemCount === 1 ? '' : 's'} found — review and approve the ones you want.`;
 
   await notify(

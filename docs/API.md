@@ -94,7 +94,13 @@ Poll a link through the pipeline.
 
 ```json
 {
-  "job": { "state": "TRANSCRIBED", "statusMessage": "Got the content…", … },
+  "job": {
+    "state": "TRANSCRIBED",
+    "statusMessage": "Got the content…",
+    "failureCode": null,
+    "requiredAction": null,
+    …
+  },
   "specId": null, "itemCount": 0, "decidedCount": 0,
   "runId": null, "runStatus": null,
   "lowConfidence": false,
@@ -104,7 +110,9 @@ Poll a link through the pipeline.
 
 States: `RECEIVED → RESOLVED → FETCHED → TRANSCRIBED → NORMALIZED → ANALYZED →
 SPEC_READY → AWAITING_DECISION → IMPLEMENTING → DONE`, plus terminal `PARTIAL`,
-`NEEDS_INPUT`, `NO_ACTION`, `FAILED`.
+`NEEDS_INPUT`, `NO_ACTION`, `FAILED`. `NO_ACTION` means the user deliberately
+closed/skipped the proposed work; content retrieval failure uses `NEEDS_INPUT`
+or `FAILED` with a machine-readable `requiredAction`.
 
 ### `POST /v1/links/{jobId}/rerun`
 
@@ -247,6 +255,10 @@ segments cannot read outside the user's own tree.
 | `GET /v1/users/me/audit` | The immutable action trail for this account |
 | `DELETE /v1/users/me/data?keepAccount=true` | Erase every link, spec, decision, run and artifact |
 | `GET/PUT/DELETE /v1/users/me/connectors[/{kind}]` | Manage connectors — secrets are stored encrypted and never returned |
+| `GET /v1/users/me/social-accounts` | List private-content session status for supported social platforms |
+| `POST /v1/users/me/social-accounts/{platform}/start` | Open a one-time local-browser sign-in session |
+| `POST /v1/users/me/social-accounts/{platform}/complete` | Validate and encrypt the completed browser session |
+| `DELETE /v1/users/me/social-accounts/{platform}` | Revoke the saved social session |
 | `GET/PATCH/DELETE /v1/users/me/schedules[/{taskId}]` | Recurring routines registered by `schedule_task` items |
 | `GET /v1/users/me/notifications`, `POST …/read` | In-app notification feed |
 | `POST/DELETE /v1/users/me/push-subscription` | Web push registration |
@@ -274,6 +286,7 @@ UI can be honest about what will happen to a link rather than silently degrading
   "speechToText": { "provider": "openai", "live": true },
   "vision": { "provider": "claude", "live": true },
   "browserAgent": false,
+  "socialAuth": { "mode": "disabled", "available": false },
   "autonomousImplementation": true,
   "signupOpen": true,
   "pushPublicKey": "B…",

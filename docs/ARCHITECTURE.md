@@ -161,8 +161,11 @@ discounts engagement bait and the post's own headline; merges near-duplicates;
 classifies each surviving tip into an item type; and emits usable parameters.
 This is why the product works out of the box.
 
-Both paths converge on the same guarantee: **items are grounded in the source or
-they do not exist.** "No actionable items" is a correct, tested outcome.
+Both paths converge on the same guarantee: **items are grounded in the source.**
+Direct advice becomes an implementation item. Successfully retrieved content
+without a direct instruction becomes a grounded application note and explicitly
+labelled experiment. Retrieval failure is a typed failure/authentication state,
+never “no actionable items.”
 
 Regardless of which path ran, the server always:
 

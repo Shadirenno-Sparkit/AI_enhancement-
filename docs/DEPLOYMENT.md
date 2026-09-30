@@ -10,6 +10,7 @@ file. That is deliberate — see the deviations section of
 
 ```bash
 npm install
+npx playwright install chromium
 cp .env.example .env
 npm run build
 npm start                # http://localhost:4000
@@ -32,6 +33,12 @@ docker compose up --build
 `docker-compose.yml` mounts `./data` for the database and artifacts and reads
 `.env`. The image includes `yt-dlp`, `ffmpeg` and `tesseract`, so the caption,
 audio and OCR-fallback paths work out of the box.
+
+The Docker image does not expose a headed login browser. Keep
+`SOCIAL_AUTH_MODE=disabled` for hosted/container deployments until an isolated
+remote browser/session broker is wired behind the social-auth interface. The
+`local_browser` mode is for an owner-operated server running on the same desktop
+where the sign-in window appears.
 
 ```bash
 docker build -t ai-enhancement-app .
@@ -129,6 +136,10 @@ WantedBy=multi-user.target
 - [ ] Budget ceilings (`MAX_USD_PER_LINK`, `MAX_USD_PER_USER_PER_DAY`) set to
       numbers you are comfortable paying if something loops.
 - [ ] `MEDIA_RETENTION_DAYS` matching your privacy posture.
+- [ ] `SOCIAL_AUTH_MODE=disabled` unless this is an owner-operated local
+      deployment or an isolated hosted session provider has been implemented.
+- [ ] A managed encryption key for connector/social-session secrets before a
+      multi-tenant launch; do not use the JWT signing key as the long-term KMS.
 
 **Rotating `JWT_SECRET` invalidates all sessions and makes stored connector
 secrets undecryptable** — the encryption key is derived from it. Re-enter

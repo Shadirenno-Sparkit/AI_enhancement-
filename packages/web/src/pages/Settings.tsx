@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { RiskTier, TrustPosture, User } from '@aiapp/shared';
+import type { RiskTier, SocialPlatform, TrustPosture, User } from '@aiapp/shared';
 import { api, type Capabilities } from '../api';
 import { Badge, Disclosure, Notice, Spinner, relativeTime } from '../components/ui';
-import { IconDownload, IconPlus } from '../components/icons';
+import { IconDownload } from '../components/icons';
 import { useAsync } from '../hooks';
 import { subscribeToPush } from '../shareQueue';
 
@@ -36,6 +36,15 @@ const CONNECTOR_KINDS = [
   { kind: 'notion', label: 'Notion' },
   { kind: 'filesystem', label: 'Files' },
 ];
+
+const SOCIAL_LABELS: Record<SocialPlatform, string> = {
+  youtube: 'YouTube',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  x: 'X',
+  linkedin: 'LinkedIn',
+  facebook: 'Facebook',
+};
 
 /** A titled panel. Related preferences read as one thing instead of a flat
  *  scroll of seven equal-weight headings. */
@@ -73,8 +82,10 @@ export function Settings({
   toast: (message: string) => void;
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
+  const [pendingSocial, setPendingSocial] = useState<{ platform: SocialPlatform; sessionId: string } | null>(null);
   const usage = useAsync(() => api.usage(), []);
   const connectors = useAsync(() => api.connectors(), []);
+  const socialAccounts = useAsync(() => api.socialAccounts(), []);
   const schedules = useAsync(() => api.schedules(), []);
 
   const update = async (patch: Parameters<typeof api.preferences>[0]): Promise<void> => {
@@ -255,10 +266,98 @@ export function Settings({
       </Group>
 
       <Group
+        title="Private social content"
+        hint="Sign in once in a separate browser window. The encrypted session is used only to read links your account can already view."
+      >
+        {socialAccounts.data?.accounts.map((account) => (
+          <div key={account.platform} className="group__row">
+            <div className="split">
+              <div>
+                <strong>{SOCIAL_LABELS[account.platform]}</strong>{' '}
+                <Badge tone={account.connected ? 'success' : 'default'}>
+                  {account.connected ? 'connected' : 'not connected'}
+                </Badge>
+                {pendingSocial?.platform === account.platform ? (
+                  <p className="muted" style={{ margin: '6px 0 0', fontSize: 14 }}>
+                    Finish signing in in the window that opened, then confirm here.
+                  </p>
+                ) : null}
+              </div>
+              <div className="btn-row" style={{ flexWrap: 'nowrap' }}>
+                {pendingSocial?.platform === account.platform ? (
+                  <>
+                    <button
+                      className="btn btn--sm"
+                      onClick={async () => {
+                        try {
+                          await api.completeSocialSignIn(account.platform, pendingSocial!.sessionId);
+                          setPendingSocial(null);
+                          socialAccounts.reload();
+                          toast(`${SOCIAL_LABELS[account.platform]} connected`);
+                        } catch (err) {
+                          toast(err instanceof Error ? err.message : 'Sign-in was not detected yet');
+                        }
+                      }}
+                    >
+                      I&rsquo;ve signed in
+                    </button>
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      onClick={async () => {
+                        await api.cancelSocialSignIn(account.platform, pendingSocial!.sessionId);
+                        setPendingSocial(null);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : account.connected ? (
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    onClick={async () => {
+                      await api.disconnectSocialAccount(account.platform);
+                      socialAccounts.reload();
+                      toast('Disconnected');
+                    }}
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn--secondary btn--sm"
+                    disabled={pendingSocial !== null || socialAccounts.data?.mode !== 'local_browser'}
+                    onClick={async () => {
+                      try {
+                        const session = await api.startSocialSignIn(account.platform);
+                        setPendingSocial({ platform: account.platform, sessionId: session.sessionId });
+                        toast(`Sign in to ${SOCIAL_LABELS[account.platform]} in the window that opened`);
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Could not start sign-in');
+                      }
+                    }}
+                  >
+                    Sign in
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+        {socialAccounts.data?.mode !== 'local_browser' ? (
+          <div className="group__row">
+            <Notice kind="warning">
+              This hosted deployment has no secure browser-session provider yet. Private social links must remain
+              blocked instead of being misreported as having no insight.
+            </Notice>
+          </div>
+        ) : null}
+      </Group>
+
+      <Group
         title="Connectors"
         hint="Items that depend on a tool you have not connected are flagged rather than silently skipped."
       >
-        {connectors.data?.connectors.map((connector) => (
+        {connectors.data?.connectors.filter((connector) => !connector.kind.startsWith('social-')).map((connector) => (
           <div key={connector.connectorId} className="group__row">
             <div className="split">
               <div>
@@ -281,28 +380,16 @@ export function Settings({
           </div>
         ))}
 
-        <div className="group__row">
-          <div className="stack">
-            {CONNECTOR_KINDS.filter(
-              (candidate) => !connectors.data?.connectors.some((existing) => existing.kind === candidate.kind),
-            ).map((candidate) => (
-              <button
-                key={candidate.kind}
-                className="btn btn--secondary btn--block"
-                onClick={async () => {
-                  // Marks the connector present. Real OAuth flows plug in here;
-                  // the secret is stored encrypted and never returned to the client.
-                  await api.saveConnector(candidate.kind, { label: candidate.label, secret: 'configured' });
-                  connectors.reload();
-                  toast(`${candidate.label} marked as connected`);
-                }}
-              >
-                <IconPlus size={15} />
-                {candidate.label}
-              </button>
-            ))}
+        {CONNECTOR_KINDS.some(
+          (candidate) => !connectors.data?.connectors.some((existing) => existing.kind === candidate.kind),
+        ) ? (
+          <div className="group__row">
+            <Notice kind="warning">
+              Tool OAuth is not implemented yet. This build no longer marks a tool connected without completing a
+              real authorization flow.
+            </Notice>
           </div>
-        </div>
+        ) : null}
       </Group>
 
       {schedules.data && schedules.data.tasks.length > 0 ? (
@@ -411,9 +498,9 @@ export function Settings({
 
       {!capabilities?.analysis.live ? (
         <Notice kind="info">
-          <strong>Running without a model key.</strong> Links are still captured, extracted and specced by the
-          built-in rule-based analyzer, but nothing reaches a model — so on-screen text is not read and items
-          are matched by keyword rather than understood. Add <code>OPENAI_API_KEY</code> (or{' '}
+          <strong>Running without a model key.</strong> Text links still use the built-in rule-based analyzer, but
+          model vision and full semantic analysis are unavailable. Video that depends on speech or on-screen text
+          will remain a visible setup failure until ASR/vision is configured. Add <code>OPENAI_API_KEY</code> (or{' '}
           <code>ANTHROPIC_API_KEY</code>) to <code>.env</code> and restart the server; config is read at boot,
           so a running server will not pick it up.
         </Notice>
@@ -451,6 +538,12 @@ export function Settings({
               <dd style={{ margin: 0 }}>
                 <Badge tone={capabilities.browserAgent ? 'success' : 'default'}>
                   {capabilities.browserAgent ? 'enabled' : 'off'}
+                </Badge>
+              </dd>
+              <dt className="faint">Private social sign-in</dt>
+              <dd style={{ margin: 0 }}>
+                <Badge tone={capabilities.socialAuth.available ? 'success' : 'warning'}>
+                  {capabilities.socialAuth.available ? capabilities.socialAuth.mode : 'not configured'}
                 </Badge>
               </dd>
             </dl>

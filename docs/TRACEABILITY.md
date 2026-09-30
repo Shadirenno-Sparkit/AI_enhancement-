@@ -43,7 +43,7 @@ where it is verified.
 | BR-A5 | Enough context per item to decide quickly | ✅ | `why`, `proposedMethod`, effort/impact, risk tier, `sourceExcerpts` | `GET /v1/specs/:id` shape |
 | BR-A6 | Flag items needing a tool the user lacks | ✅ | `findMissingPrerequisites` against real connectors | "assigns scopes server-side and ignores what the model claims" |
 | BR-A7 | Detect duplicates already implemented *(Could)* | ✅ | `markDuplicates` vs `previouslyApprovedItems` | — |
-| — | **Never fabricate advice** | ✅ | Grounding rules in both paths; `noActionableItems` | "finds nothing actionable in pure entertainment", "returns no items for pure entertainment" |
+| — | **Never fabricate advice** | ✅ | Grounding rules plus labelled application fallback | "turns non-instructional content into a grounded application note" |
 
 ## Review & decision (BRD §8.4)
 
@@ -98,7 +98,7 @@ where it is verified.
 | Usability & accessibility | Mobile-first, one-handed (actions at thumb height), 44px+ targets, visible focus rings, `prefers-reduced-motion`, labelled controls, AA-contrast pairs in light and dark |
 | Transparency | Provenance and confidence per segment; source excerpts per item; full run log and audit trail; `/v1/capabilities` states what is actually live |
 | Security & privacy | TLS-first, encrypted connector secrets, per-user isolation, auto-redacting logs, user-initiated erasure, media retention purge |
-| Legal / compliance | Only what a platform serves to a signed-out viewer; no paywall/DRM/private-gate circumvention; SSRF-blocked downloads |
+| Legal / compliance | Public content plus the user's explicitly connected session; no paywall/DRM/access-control circumvention; SSRF-blocked downloads |
 | Cost control | Per-link and per-user-per-day ceilings enforced before paid stages; per-provider pricing tables; live spend in Settings |
 | Reliability of autonomy | Scope sandbox, dry-run, failure isolation, recorded undo, append-only audit |
 

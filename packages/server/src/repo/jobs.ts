@@ -1,6 +1,6 @@
-import type { CaptureSource, Job, JobState, Platform } from '@aiapp/shared';
+import type { CaptureSource, Job, JobRequiredAction, JobState, Platform } from '@aiapp/shared';
 import { JOB_STATE_ORDER, TERMINAL_JOB_STATES } from '@aiapp/shared';
-import { db, now } from '../db/index.js';
+import { db, now, parseJson } from '../db/index.js';
 import { id, idempotencyKey } from '../util/ids.js';
 
 interface JobRow {
@@ -14,6 +14,8 @@ interface JobRow {
   platform: string;
   state: string;
   status_message: string | null;
+  failure_code: string | null;
+  required_action: string | null;
   title: string | null;
   capture_source: string;
   folder_name: string | null;
@@ -36,6 +38,8 @@ function toJob(row: JobRow): Job {
     platform: row.platform as Platform,
     state: row.state as JobState,
     statusMessage: row.status_message,
+    failureCode: row.failure_code,
+    requiredAction: parseJson<JobRequiredAction | null>(row.required_action, null),
     title: row.title,
     captureSource: row.capture_source as CaptureSource,
     folderName: row.folder_name,
@@ -122,6 +126,8 @@ export function listJobs(userId: string, limit = 100, offset = 0): Job[] {
 export interface JobUpdate {
   state?: JobState;
   statusMessage?: string | null;
+  failureCode?: string | null;
+  requiredAction?: JobRequiredAction | null;
   title?: string | null;
   folderName?: string | null;
   platform?: Platform;
@@ -145,12 +151,21 @@ export function updateJob(jobId: string, patch: JobUpdate): Job | null {
 
   db()
     .prepare(
-      `UPDATE jobs SET state = ?, status_message = ?, title = ?, folder_name = ?, platform = ?, updated_at = ?
+      `UPDATE jobs SET state = ?, status_message = ?, failure_code = ?, required_action = ?,
+                       title = ?, folder_name = ?, platform = ?, updated_at = ?
        WHERE job_id = ?`,
     )
     .run(
       nextState,
       patch.statusMessage !== undefined ? patch.statusMessage : current.statusMessage,
+      patch.failureCode !== undefined ? patch.failureCode : current.failureCode,
+      patch.requiredAction !== undefined
+        ? patch.requiredAction
+          ? JSON.stringify(patch.requiredAction)
+          : null
+        : current.requiredAction
+          ? JSON.stringify(current.requiredAction)
+          : null,
       patch.title !== undefined ? patch.title : current.title,
       patch.folderName !== undefined ? patch.folderName : current.folderName,
       patch.platform ?? current.platform,
@@ -158,6 +173,24 @@ export function updateJob(jobId: string, patch: JobUpdate): Job | null {
       jobId,
     );
   return getJobUnscoped(jobId);
+}
+
+/**
+ * Explicitly reopens a terminal job for a user-requested retry.
+ *
+ * Normal state updates correctly reject backwards transitions, but that also
+ * means NEEDS_INPUT/FAILED jobs cannot be rerun without this deliberate reset.
+ */
+export function resetJobForRetry(jobId: string, userId: string): Job | null {
+  const result = db()
+    .prepare(
+      `UPDATE jobs
+          SET state = 'RECEIVED', status_message = ?, failure_code = NULL,
+              required_action = NULL, updated_at = ?
+        WHERE job_id = ? AND user_id = ?`,
+    )
+    .run('Queued to try the extraction again…', now(), jobId, userId);
+  return result.changes > 0 ? getJob(jobId, userId) : null;
 }
 
 export function addJobCost(

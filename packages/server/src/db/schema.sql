@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   platform       TEXT NOT NULL,
   state          TEXT NOT NULL,
   status_message TEXT,
+  failure_code   TEXT,
+  required_action TEXT,
   title          TEXT,
   capture_source TEXT NOT NULL DEFAULT 'api',
   folder_name    TEXT,
@@ -87,10 +89,11 @@ CREATE TABLE IF NOT EXISTS insight_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_src_job ON insight_sources(job_id);
 
--- Content-addressed cache: re-sharing a link anyone has already processed is
--- instant and free (spec §6.5 "Caching & idempotency").
+-- Content-addressed cache. The application hashes user_id with the normalized
+-- URL so authenticated/private extraction never crosses tenant boundaries.
 CREATE TABLE IF NOT EXISTS extraction_cache (
   content_hash TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   payload      TEXT NOT NULL,
   created_at   TEXT NOT NULL
 );

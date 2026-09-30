@@ -230,7 +230,7 @@ export async function writeSummary(
       );
     });
   } else {
-    lines.push('No actionable items were found in this post.', '');
+    lines.push('No implementation path was generated. Treat this as an analysis failure and re-run the link.', '');
   }
 
   await write(folder, ARTIFACT_FILES.summary, lines.join('\n'));
@@ -251,7 +251,7 @@ export async function writePlan(
 
   const lines = [`# Implementation plan`, '', `Spec: \`${spec.specId}\``, ''];
   if (spec.items.length === 0) {
-    lines.push('Nothing to implement — no actionable items were identified.');
+    lines.push('No implementation path was generated. Re-run the link after fixing the analysis failure.');
   } else {
     lines.push('| # | Item | Type | Decision | Scopes | Prerequisites |', '| --- | --- | --- | --- | --- | --- |');
     spec.items.forEach((item, index) => {

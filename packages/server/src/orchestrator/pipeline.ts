@@ -15,6 +15,7 @@ import {
   writeTranscript,
 } from '../artifacts/fileManager.js';
 import { fetchMedia } from '../ingestion/fetcher.js';
+import { materializeSocialSession } from '../ingestion/social-auth.js';
 import { normalize } from '../ingestion/normalizer.js';
 import { runTranscriptWaterfall } from '../ingestion/transcript.js';
 import { notifySpecReady } from '../notifications/notify.js';
@@ -63,6 +64,8 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     state: 'RESOLVED',
     platform,
     statusMessage: `Recognised a ${PLATFORM_LABELS[platform]} link. Fetching the content…`,
+    failureCode: null,
+    requiredAction: null,
   });
 
   // A provisional folder so every later stage has somewhere to write. It is
@@ -75,9 +78,12 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   await fs.mkdir(workDir, { recursive: true });
 
   // ── FETCHED ───────────────────────────────────────────────────────────────
-  // Content-hash cache: a link anyone has already extracted is instant and free
-  // (spec §6.5). Extraction output is not user-specific, so this is safe to share.
-  const cacheKey = sha256(`extract:v1:${job.normalizedUrl}`);
+  // Extraction can contain private posts, personal feeds and user-supplied
+  // context. It is therefore cached per user; a global URL cache would leak one
+  // customer's authenticated transcript to another customer.
+  const cacheKey = sha256(
+    `extract:v3:${job.userId}:${job.normalizedUrl}:${sha256(job.sharedText ?? '')}:${sha256(job.note ?? '')}`,
+  );
   type CachedExtraction = {
     segments: Awaited<ReturnType<typeof runTranscriptWaterfall>>['segments'];
     language: string;
@@ -89,13 +95,16 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     postDescription?: string | null;
     fetchMethods: string[];
     failureReason?: string | null;
+    needsSignIn?: boolean;
+    signInHost?: string | null;
   };
 
-  let extraction: CachedExtraction | null = options.force ? null : cacheGet<CachedExtraction>(cacheKey);
+  let extraction: CachedExtraction | null = options.force ? null : cacheGet<CachedExtraction>(job.userId, cacheKey);
   if (extraction) {
     log.info('reusing cached extraction', { jobId });
     updateJob(jobId, { state: 'TRANSCRIBED', statusMessage: 'Reused a previous extraction of this link.' });
   } else {
+    const socialSession = await materializeSocialSession(job.userId, platform);
     const media = await fetchMedia({
       url: job.url,
       platform,
@@ -103,23 +112,37 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
       // Rerun forces the heavier path even when captions look adequate.
       needAudio: true,
       needFrames: true,
-    });
+      storageStatePath: socialSession?.storageStatePath ?? null,
+      cookiesFilePath: socialSession?.cookiesFilePath ?? null,
+    }).finally(() => socialSession?.cleanup());
 
     updateJob(jobId, {
       state: 'FETCHED',
       title: media.title ?? job.title,
       statusMessage: media.inaccessible
-        ? 'The platform would not serve this content.'
+        ? media.needsSignIn
+          ? `Sign in to ${PLATFORM_LABELS[platform]} once so this post can be read.`
+          : 'The content could not be retrieved. Treating this as an extraction failure…'
         : 'Got the content. Reading the transcript and on-screen text…',
     });
 
     // ── TRANSCRIBED ─────────────────────────────────────────────────────────
-    const transcript = await runTranscriptWaterfall({
-      media,
-      platform,
-      sharedText: job.sharedText,
-      note: job.note,
-    });
+    const transcript = media.needsSignIn
+      ? {
+          segments: [],
+          language: 'en',
+          durationSec: media.durationSec ?? null,
+          vtt: null,
+          methodsUsed: [],
+          cost: { asrSeconds: 0, usd: 0 },
+          failureReason: media.inaccessibleReason ?? `Sign in to ${PLATFORM_LABELS[platform]} to read this post.`,
+        }
+      : await runTranscriptWaterfall({
+          media,
+          platform,
+          sharedText: job.sharedText,
+          note: job.note,
+        });
 
     addJobCost(jobId, { asrSeconds: transcript.cost.asrSeconds, usd: transcript.cost.usd });
     recordUsage(job.userId, { asrSeconds: transcript.cost.asrSeconds, usd: transcript.cost.usd });
@@ -135,9 +158,11 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
       postDescription: media.description,
       fetchMethods: media.methods,
       failureReason: transcript.failureReason,
+      needsSignIn: media.needsSignIn,
+      signInHost: media.signInHost,
     };
 
-    if (transcript.segments.length > 0) cacheSet(cacheKey, extraction);
+    if (transcript.segments.length > 0) cacheSet(job.userId, cacheKey, extraction);
     updateJob(jobId, { state: 'TRANSCRIBED' });
   }
 
@@ -148,14 +173,39 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
     methods: extraction.fetchMethods,
   });
 
-  // Nothing usable — say so plainly and file a minimal record (BR-U7, use case 9.4).
+  // Nothing usable is an acquisition failure, never evidence that the link had
+  // no value. Ask for authentication when it can unblock the job; otherwise
+  // surface a product failure with a typed recovery action for support/ops.
   if (extraction.segments.length === 0) {
     const reason = extraction.failureReason ?? 'No usable content could be extracted from this link.';
-    updateJob(jobId, { state: 'NO_ACTION', statusMessage: reason });
+    const needsSignIn = extraction.needsSignIn === true;
+    const statusMessage = needsSignIn
+      ? reason
+      : `We could not read this link yet. This is an extraction failure, not a claim that the link had no useful insight. ${reason}`;
+    updateJob(jobId, {
+      state: needsSignIn ? 'NEEDS_INPUT' : 'FAILED',
+      statusMessage,
+      failureCode: needsSignIn ? 'social_auth_required' : 'extraction_failed',
+      requiredAction: needsSignIn
+        ? {
+            kind: 'connect_social',
+            platform: platform === 'other' ? null : platform,
+            message: `Sign in to ${PLATFORM_LABELS[platform]} once, then this link will be retried.`,
+          }
+        : {
+            kind: reason.includes('not configured') ? 'configure_provider' : 'retry',
+            message: 'Fix or configure the missing extraction capability, then retry this link.',
+          },
+    });
     await writeTranscript(job.userId, folderName, { vtt: null, text: `(nothing extracted)\n\n${reason}` });
-    audit({ userId: job.userId, jobId, event: 'job.no_content', detail: reason });
+    audit({
+      userId: job.userId,
+      jobId,
+      event: needsSignIn ? 'job.auth_required' : 'job.extraction_failed',
+      detail: reason,
+    });
     await rebuildIndex(job.userId);
-    await notifySpecReady({ user, job: getJobUnscoped(jobId)!, itemCount: 0, noContent: true, reason });
+    await notifySpecReady({ user, job: getJobUnscoped(jobId)!, itemCount: 0, noContent: true, reason: statusMessage });
     return;
   }
 
@@ -195,7 +245,12 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   const spent = getJobUnscoped(jobId)?.cost.usd ?? 0;
   if (!withinLinkBudget(spent)) {
     const message = `This link hit the per-link budget of $${cfg.maxUsdPerLink.toFixed(2)} during extraction, so analysis was skipped.`;
-    updateJob(jobId, { state: 'NEEDS_INPUT', statusMessage: message });
+    updateJob(jobId, {
+      state: 'NEEDS_INPUT',
+      statusMessage: message,
+      failureCode: 'link_budget_exceeded',
+      requiredAction: { kind: 'increase_budget', message },
+    });
     audit({ userId: job.userId, jobId, event: 'budget.link_exceeded', detail: message });
     await rebuildIndex(job.userId);
     return;
@@ -233,13 +288,11 @@ export async function processJob(jobId: string, options: ProcessOptions = {}): P
   await writeSummary(job.userId, finalFolder, jobWithTitle, spec);
   await writeSpec(job.userId, finalFolder, spec);
 
-  const finalState = spec.items.length === 0 ? 'NO_ACTION' : 'SPEC_READY';
   updateJob(jobId, {
-    state: finalState,
-    statusMessage:
-      spec.items.length === 0
-        ? 'No actionable items were found in this post.'
-        : `${spec.items.length} improvement${spec.items.length === 1 ? '' : 's'} ready for you to review.`,
+    state: 'SPEC_READY',
+    statusMessage: `${spec.items.length} improvement${spec.items.length === 1 ? '' : 's'} ready for you to review.`,
+    failureCode: null,
+    requiredAction: null,
   });
 
   audit({

@@ -8,6 +8,10 @@ services:
     env_file:
       - .env
     environment:
+      # A container is a hosted-style deployment. Force production safeguards
+      # even when the copied .env still says development.
+      NODE_ENV: production
+      SOCIAL_AUTH_MODE: disabled
       # Inside the container the paths are fixed; the host mount decides where
       # the data actually lives.
       DATABASE_PATH: /app/data/aiapp.sqlite

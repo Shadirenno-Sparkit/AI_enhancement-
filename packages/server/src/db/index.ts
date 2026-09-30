@@ -36,7 +36,34 @@ export function openDatabase(filePath?: string): Db {
   // and the API share one file.
   db.pragma('busy_timeout = 5000');
   db.exec(fs.readFileSync(schemaPath(), 'utf8'));
+  migrate(db);
   return db;
+}
+
+/**
+ * Lightweight additive migrations for installations created by older builds.
+ * `CREATE TABLE IF NOT EXISTS` does not add new columns to an existing table,
+ * so release-safe additions live here until the project adopts versioned SQL
+ * migrations.
+ */
+function migrate(database: Db): void {
+  const jobColumns = new Set(
+    (database.pragma('table_info(jobs)') as { name: string }[]).map((column) => column.name),
+  );
+  if (!jobColumns.has('failure_code')) database.exec('ALTER TABLE jobs ADD COLUMN failure_code TEXT');
+  if (!jobColumns.has('required_action')) database.exec('ALTER TABLE jobs ADD COLUMN required_action TEXT');
+
+  const cacheColumns = new Set(
+    (database.pragma('table_info(extraction_cache)') as { name: string }[]).map((column) => column.name),
+  );
+  if (!cacheColumns.has('user_id')) {
+    database.exec('ALTER TABLE extraction_cache ADD COLUMN user_id TEXT');
+    // Legacy entries were globally keyed and may contain private/user-supplied
+    // text. Their owner cannot be recovered from the hash, so the only safe
+    // migration is to discard this regenerable cache.
+    database.exec('DELETE FROM extraction_cache');
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_extraction_cache_user ON extraction_cache(user_id)');
 }
 
 export function db(): Db {
