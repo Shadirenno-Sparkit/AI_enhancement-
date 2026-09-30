@@ -44,6 +44,8 @@ export interface FetchOptions {
   needFrames: boolean;
   /** Playwright storageState from a completed sign-in, when the user connected this platform. */
   storageStatePath?: string | null;
+  /** Per-user Netscape cookie file materialized for yt-dlp for this fetch only. */
+  cookiesFilePath?: string | null;
 }
 
 const USER_AGENT =
@@ -113,6 +115,10 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
         result.inaccessible = true;
         result.inaccessibleReason = yt.inaccessibleReason;
       }
+      if (yt.needsSignIn) {
+        result.needsSignIn = true;
+        result.signInHost = options.platform;
+      }
     }
   } else {
     log.warn('yt-dlp is not on PATH — captions, audio and video frames are all unavailable', {
@@ -179,6 +185,13 @@ export async function fetchMedia(options: FetchOptions): Promise<FetchedMedia> {
         // Screenshots join the image set, so the existing OCR step reads them.
         result.imagePaths.push(...capture.screenshots);
         result.methods.push('browser:screenshots');
+      }
+      // A rendered authenticated page is a successful acquisition even if an
+      // earlier signed-out yt-dlp pass reported a login wall.
+      if (capture.text || capture.screenshots.length > 0) {
+        result.inaccessible = false;
+        result.needsSignIn = false;
+        result.inaccessibleReason = null;
       }
     }
   }
@@ -335,6 +348,7 @@ interface YtDlpResult {
   videoPath?: string | null;
   inaccessible?: boolean;
   inaccessibleReason?: string | null;
+  needsSignIn?: boolean;
 }
 
 /**
@@ -344,8 +358,9 @@ interface YtDlpResult {
  * for that platform this is the difference between the whole pipeline working
  * and returning "nothing to act on".
  */
-function cookieArgs(): string[] {
+function cookieArgs(options: FetchOptions): string[] {
   const cfg = config();
+  if (options.cookiesFilePath) return ['--cookies', options.cookiesFilePath];
   if (cfg.ytdlpCookiesFile) return ['--cookies', cfg.ytdlpCookiesFile];
   if (cfg.ytdlpCookiesFromBrowser) return ['--cookies-from-browser', cfg.ytdlpCookiesFromBrowser];
   return [];
@@ -354,7 +369,7 @@ function cookieArgs(): string[] {
 async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
   const cfg = config();
   const out: YtDlpResult = { subtitleFiles: [] };
-  const cookies = cookieArgs();
+  const cookies = cookieArgs(options);
 
   // Pass 1 — metadata plus subtitle tracks, no media download. This is the
   // cheap, high-fidelity path that succeeds for most YouTube links.
@@ -388,12 +403,12 @@ async function runYtDlp(options: FetchOptions): Promise<YtDlpResult | null> {
       stderr.includes('private') ||
       stderr.includes('login required') ||
       stderr.includes('sign in') ||
-      stderr.includes('members-only') ||
-      stderr.includes('not available')
+      stderr.includes('members-only')
     ) {
       out.inaccessible = true;
+      out.needsSignIn = true;
       out.inaccessibleReason =
-        'This post is private, age-restricted or otherwise not viewable without signing in, so it could not be retrieved.';
+        `This ${options.platform} post needs an authenticated account before its content can be retrieved.`;
       return out;
     }
     log.debug('yt-dlp subtitle pass did not succeed', { stderr: subsResult.stderr.slice(0, 300) });

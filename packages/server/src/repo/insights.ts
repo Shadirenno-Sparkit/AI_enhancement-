@@ -69,17 +69,19 @@ export function getInsightSourceByJob(jobId: string): InsightSource | null {
   return row ? toSource(row) : null;
 }
 
-// ─── Content-addressed extraction cache (spec §6.5) ──────────────────────────
+// ─── User-scoped content-addressed extraction cache (spec §6.5) ──────────────
 
-export function cacheGet<T>(contentHash: string): T | null {
+export function cacheGet<T>(userId: string, contentHash: string): T | null {
   const row = db()
-    .prepare('SELECT payload FROM extraction_cache WHERE content_hash = ?')
-    .get(contentHash) as { payload: string } | undefined;
+    .prepare('SELECT payload FROM extraction_cache WHERE content_hash = ? AND user_id = ?')
+    .get(contentHash, userId) as { payload: string } | undefined;
   return row ? parseJson<T | null>(row.payload, null) : null;
 }
 
-export function cacheSet(contentHash: string, payload: unknown): void {
+export function cacheSet(userId: string, contentHash: string, payload: unknown): void {
   db()
-    .prepare('INSERT OR REPLACE INTO extraction_cache (content_hash, payload, created_at) VALUES (?, ?, ?)')
-    .run(contentHash, JSON.stringify(payload), now());
+    .prepare(
+      'INSERT OR REPLACE INTO extraction_cache (content_hash, user_id, payload, created_at) VALUES (?, ?, ?, ?)',
+    )
+    .run(contentHash, userId, JSON.stringify(payload), now());
 }

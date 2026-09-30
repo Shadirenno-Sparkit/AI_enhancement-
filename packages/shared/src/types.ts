@@ -20,6 +20,10 @@ export const PLATFORMS = [
 ] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
+/** Platforms that can hold user-specific/private content behind a login. */
+export const SOCIAL_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'x', 'linkedin', 'facebook'] as const;
+export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number];
+
 /** How a link entered the system. BR-C1 / BR-C2 / BR-C3. */
 export const CAPTURE_SOURCES = ['share_target', 'share_extension', 'paste', 'api', 'import'] as const;
 export type CaptureSource = (typeof CAPTURE_SOURCES)[number];
@@ -81,6 +85,20 @@ export interface JobCost {
   usd: number;
 }
 
+/**
+ * A machine-readable recovery path for a job that could not continue.
+ *
+ * Retrieval failures are product failures or explicit user-action states; they
+ * must never be represented as "no insight found". Keeping the action typed is
+ * what lets every client offer the right recovery control instead of parsing a
+ * human status message.
+ */
+export interface JobRequiredAction {
+  kind: 'connect_social' | 'configure_provider' | 'retry' | 'increase_budget';
+  message: string;
+  platform?: SocialPlatform | null;
+}
+
 export interface Job {
   jobId: string;
   userId: string;
@@ -92,6 +110,10 @@ export interface Job {
   state: JobState;
   /** Human-readable explanation of the current state, surfaced in the UI. BR-U7. */
   statusMessage?: string | null;
+  /** Stable operator-facing code for diagnostics and support. */
+  failureCode?: string | null;
+  /** The next action the UI can offer when processing is blocked. */
+  requiredAction?: JobRequiredAction | null;
   title?: string | null;
   captureSource: CaptureSource;
   folderName?: string | null;

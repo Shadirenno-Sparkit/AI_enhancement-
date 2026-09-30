@@ -127,9 +127,9 @@ export function Auth({
 
         {capabilities && !capabilities.analysis.live ? (
           <p className="faint" style={{ marginTop: 16, textAlign: 'center' }}>
-            This deployment is running the offline analyzer — links are still extracted and specced, just
-            without a model. Add <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> for
-            full-quality analysis.
+            This deployment is using the offline analyzer for text. Video that needs speech or visual reading
+            requires configured ASR/vision. Add <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> for
+            full semantic analysis.
           </p>
         ) : null}
       </form>

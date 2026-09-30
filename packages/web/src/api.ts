@@ -9,6 +9,7 @@ import type {
   Provenance,
   Spec,
   SpecItem,
+  SocialPlatform,
   User,
   UserPreferences,
 } from '@aiapp/shared';
@@ -185,10 +186,17 @@ export interface Capabilities {
   speechToText: { provider: string; live: boolean };
   vision: { provider: string; live: boolean };
   browserAgent: boolean;
+  socialAuth: { mode: string; available: boolean };
   autonomousImplementation: boolean;
   signupOpen: boolean;
   pushPublicKey: string | null;
   budgets: { maxUsdPerLink: number; maxUsdPerUserPerDay: number };
+}
+
+export interface SocialAccountView {
+  platform: SocialPlatform;
+  connected: boolean;
+  connectedAt: string | null;
 }
 
 export interface Digest {
@@ -292,6 +300,29 @@ export const api = {
     }>('/v1/users/me/usage'),
 
   connectors: () => request<{ connectors: Connector[] }>('/v1/users/me/connectors'),
+
+  socialAccounts: () =>
+    request<{ accounts: SocialAccountView[]; mode: string }>('/v1/users/me/social-accounts'),
+
+  startSocialSignIn: (platform: SocialPlatform) =>
+    request<{ sessionId: string; expiresAt: string }>(`/v1/users/me/social-accounts/${platform}/start`, {
+      method: 'POST',
+    }),
+
+  completeSocialSignIn: (platform: SocialPlatform, sessionId: string) =>
+    request<{ connected: boolean }>(`/v1/users/me/social-accounts/${platform}/complete`, {
+      method: 'POST',
+      body: { sessionId },
+    }),
+
+  cancelSocialSignIn: (platform: SocialPlatform, sessionId: string) =>
+    request<void>(`/v1/users/me/social-accounts/${platform}/cancel`, {
+      method: 'POST',
+      body: { sessionId },
+    }),
+
+  disconnectSocialAccount: (platform: SocialPlatform) =>
+    request<void>(`/v1/users/me/social-accounts/${platform}`, { method: 'DELETE' }),
 
   saveConnector: (kind: string, input: { label?: string; secret?: string | null; scopes?: string[] }) =>
     request<{ connector: Connector }>(`/v1/users/me/connectors/${kind}`, { method: 'PUT', body: input }),

@@ -1,8 +1,9 @@
 # AI Enhancement App
 
-Share a social post while you're scrolling. Get back a plain-English summary, an
-itemised plan, and — for the items you approve — the work actually done, filed
-into a folder on your desktop.
+Share any link you believe could improve your life or work. The app retrieves
+the post, video, audio, image or page; works out what is different from your
+current setup; produces a concrete implementation or learning experiment; and,
+for the items you approve, carries out the bounded work it can do.
 
 This is a working implementation of the **AI Enhancement App** described in the
 [Business Requirements Document](docs/AI_Enhancement_App_BRD.docx) and
@@ -30,15 +31,17 @@ capture → understand → analyse & spec → notify → review & decide → imp
 
 ## Quickstart
 
-**It runs with no API keys.** With an empty `.env` the full loop works
-end-to-end using a built-in rule-based analyzer — real extraction, real specs,
-real implementation, no model calls. Adding keys upgrades the same pipeline in
-place.
+The text-link path runs without API keys using the built-in analyzer. Processing
+speech and text inside videos requires a live ASR/vision provider (or local
+Whisper/Tesseract), and private social content requires a connected session.
+The app reports missing capability as a processing problem; it does not call an
+unread link "nothing actionable."
 
 ```bash
 git clone <this repo> && cd AI_enhancement-
 npm install
 cp .env.example .env
+npx playwright install chromium
 npm run build
 npm start
 ```
@@ -61,11 +64,24 @@ npm run dev     # API on :4000, PWA on :5173
 | `VISION_PROVIDER=claude` | Reads text baked onto images and carousel slides |
 | `yt-dlp` on `PATH` | Author captions, auto-captions and audio download — the cleanest, highest-fidelity extraction path |
 | `ffmpeg` on `PATH` | Frame sampling so on-screen text in videos gets read |
-| `ENABLE_BROWSER_AGENT=true` + `npm i playwright` | Renders JavaScript-heavy pages as a last resort |
+| `ENABLE_BROWSER_AGENT=true` + `npx playwright install chromium` | Renders JavaScript-heavy pages and enables local one-time social sign-in |
 
 Every one of these is optional and independently useful. The **Settings** screen
 shows exactly which are live on your deployment, so the app is always honest
 about what will happen to a link.
+
+### Private posts and one-time sign-in
+
+In a local deployment, Settings → **Private social content** opens a separate
+Playwright browser window for YouTube, Instagram, TikTok, X, LinkedIn or Facebook. Sign
+in once, then confirm in the app. The encrypted browser session is materialized
+only for the duration of an extraction and supplied to both the rendered-page
+path and `yt-dlp`; temporary cookie files are deleted afterward.
+
+For a hosted commercial deployment, set `SOCIAL_AUTH_MODE=disabled` until an
+isolated remote-browser/session broker is configured. A headed browser on the
+server host is a useful local MVP, not a safe multi-tenant SaaS authentication
+architecture. See [commercialization readiness](docs/COMMERCIALIZATION.md).
 
 ---
 
@@ -147,18 +163,23 @@ own artifact folder.
 
 ---
 
-## What it does *not* do
+## Product contract
 
 Stated plainly, because both source documents are explicit about it:
 
-- **It never invents advice.** A post with no actionable content returns "no
-  actionable items found" and files a minimal record. This is a tested, expected
-  outcome, not a failure.
-- **It does not circumvent anything.** No paywalls, DRM, private-account gates or
-  rate-limit evasion. It only requests what a platform serves to a signed-out
-  viewer. Coverage of private or protected content is limited by design.
+- **A retrieved link always produces a useful path.** Direct advice becomes an
+  implementation plan. Commentary or entertainment becomes a grounded
+  application note and small experiment; the app labels its inference instead
+  of pretending the creator gave advice they did not give.
+- **A retrieval failure is never called “no insight.”** Missing authentication,
+  provider setup, unsupported media and extractor failures are typed,
+  actionable product states and remain visible until retried or fixed.
+- **Private content uses the user's own authorized session.** The app does not
+  bypass access controls, DRM or platform restrictions. Deleted content,
+  revoked access or a platform extractor breakage can still fail, but that is
+  reported as an acquisition failure—not a judgment about the content.
 - **It does not act outside your own environment.** Autonomous implementation is
-  scoped to your AI setup and connected tools.
+  confined to approved scopes, generated artifacts and tools you explicitly connect.
 
 ---
 
@@ -170,7 +191,8 @@ Stated plainly, because both source documents are explicit about it:
 | [docs/API.md](docs/API.md) | Every endpoint, with request/response shapes |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, hosting, HTTPS, backups, hardening |
 | [docs/TRACEABILITY.md](docs/TRACEABILITY.md) | Every BRD requirement → where it is implemented and tested |
-| [docs/STATUS.md](docs/STATUS.md) | What is built, what is deliberately scoped out, what is next |
+| [docs/STATUS.md](docs/STATUS.md) | What is genuinely built and what remains incomplete |
+| [docs/COMMERCIALIZATION.md](docs/COMMERCIALIZATION.md) | Release gates from local alpha through paid GA |
 
 ---
 
@@ -192,11 +214,12 @@ scripts/             icon generation
 npm test
 ```
 
-77 tests covering the extraction waterfall (captioned video, rolling-window
+92 tests covering the extraction waterfall (captioned video, rolling-window
 auto-captions, silent carousels, audio-only clips), analyzer fidelity including
-the "nothing actionable" case, the full capture → spec → approve → implement
+the grounded-application fallback, the full capture → spec → approve → implement
 loop, per-user isolation, path traversal, scope containment, dry-run, budgets
-and audit completeness.
+and audit completeness. The suite also verifies that extraction caches cannot
+leak a private transcript across users.
 
 ## Licence
 

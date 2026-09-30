@@ -125,6 +125,8 @@ export interface Config {
   ytdlpCookiesFile: string;
   ffmpegBin: string;
   enableBrowserAgent: boolean;
+  /** disabled | local_browser. Local mode opens a headed browser on the server host. */
+  socialAuthMode: string;
   maxUsdPerLink: number;
   maxUsdPerUserPerDay: number;
   maxAsrSecondsPerLink: number;
@@ -203,6 +205,7 @@ export function loadConfig(): Config {
     ytdlpCookiesFile: str('YTDLP_COOKIES_FILE', ''),
     ffmpegBin: str('FFMPEG_BIN', 'ffmpeg'),
     enableBrowserAgent: bool('ENABLE_BROWSER_AGENT', true),
+    socialAuthMode: str('SOCIAL_AUTH_MODE', isProduction ? 'disabled' : 'local_browser'),
     maxUsdPerLink: num('MAX_USD_PER_LINK', 0.75),
     maxUsdPerUserPerDay: num('MAX_USD_PER_USER_PER_DAY', 10),
     maxAsrSecondsPerLink: num('MAX_ASR_SECONDS_PER_LINK', 900),

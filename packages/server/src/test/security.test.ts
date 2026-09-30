@@ -10,6 +10,7 @@ import { getJobUnscoped } from '../repo/jobs.js';
 import { isAllowedDownloadUrl, isForbiddenCommand, sandboxFor, evaluateAutonomy, ScopeViolation } from '../implementation/guardrails.js';
 import { getUserById, updatePreferences } from '../repo/users.js';
 import { listAudit } from '../repo/audit.js';
+import { db } from '../db/index.js';
 
 let harness: Harness;
 
@@ -168,6 +169,9 @@ describe('per-user isolation (BR-S2)', () => {
     const job = getJobUnscoped(jobId)!;
     const folder = path.join(harness.dir, 'artifacts', alice.userId, job.folderName!);
     expect(fs.existsSync(folder)).toBe(true);
+    expect(
+      (db().prepare('SELECT COUNT(*) AS n FROM extraction_cache WHERE user_id = ?').get(alice.userId) as { n: number }).n,
+    ).toBe(1);
 
     const response = await harness.request<{ deleted: boolean }>('DELETE', '/v1/users/me/data', {
       token: alice.token,
@@ -177,6 +181,9 @@ describe('per-user isolation (BR-S2)', () => {
 
     expect(fs.existsSync(folder)).toBe(false);
     expect(getJobUnscoped(jobId)).toBeNull();
+    expect(
+      (db().prepare('SELECT COUNT(*) AS n FROM extraction_cache WHERE user_id = ?').get(alice.userId) as { n: number }).n,
+    ).toBe(0);
     // The account survives, but the audit trail is de-identified rather than lost.
     expect(getUserById(alice.userId)).not.toBeNull();
     expect(listAudit(alice.userId)).toHaveLength(0);

@@ -77,6 +77,7 @@ export function createApp(): Express {
       speechToText: { provider: asr().name, live: asr().live },
       vision: { provider: vision().name, live: vision().live },
       browserAgent: cfg.enableBrowserAgent,
+      socialAuth: { mode: cfg.socialAuthMode, available: cfg.socialAuthMode !== 'disabled' },
       autonomousImplementation: cfg.enableAutonomousImplementation,
       signupOpen: cfg.allowSignup,
       pushPublicKey: cfg.vapidPublicKey || null,

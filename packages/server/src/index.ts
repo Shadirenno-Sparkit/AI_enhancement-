@@ -36,8 +36,8 @@ async function main(): Promise<void> {
     });
     if (!llm().live) {
       log.warn(
-        'Running without ANTHROPIC_API_KEY: links are still captured, extracted and specced by the ' +
-          'offline analyzer. Add a key to .env for full-quality analysis.',
+        'Running without a live model provider: text links still use the offline analyzer, but full-quality ' +
+          'analysis and model vision require OPENAI_API_KEY or ANTHROPIC_API_KEY in .env.',
       );
     }
   });

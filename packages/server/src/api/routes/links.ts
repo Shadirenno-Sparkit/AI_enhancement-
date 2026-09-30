@@ -7,7 +7,7 @@ import { assertWithinDailyBudget } from '../../implementation/guardrails.js';
 import { libraryEntryFor, libraryFor, rebuildIndex } from '../../orchestrator/index-writer.js';
 import { enqueue } from '../../queue/queue.js';
 import { audit } from '../../repo/audit.js';
-import { createOrGetJob, deleteJob, getJob } from '../../repo/jobs.js';
+import { createOrGetJob, deleteJob, getJob, resetJobForRetry } from '../../repo/jobs.js';
 import { badRequest, notFound } from '../../util/errors.js';
 import { asyncHandler, currentUser, rateLimit, requireAuth } from '../middleware.js';
 
@@ -110,6 +110,7 @@ linksRouter.post(
     if (!job) throw notFound('No such link.');
 
     assertWithinDailyBudget(user.userId);
+    resetJobForRetry(job.jobId, user.userId);
     enqueue({ jobId: job.jobId, kind: 'process', payload: { force: true } });
     audit({ userId: user.userId, jobId: job.jobId, event: 'link.rerun' });
 

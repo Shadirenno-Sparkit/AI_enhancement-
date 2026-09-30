@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { DecisionChoice, ItemResult, ItemType, Provenance } from '@aiapp/shared';
+import type { DecisionChoice, ItemResult, ItemType, Provenance, SocialPlatform } from '@aiapp/shared';
 import { PLATFORM_LABELS } from '@aiapp/shared';
 import { api, type ReviewItem, type SpecView } from '../api';
 import {
@@ -123,9 +123,42 @@ export function Review({ jobId, toast }: { jobId: string; toast: (message: strin
 
       {job.state === 'FAILED' ? (
         <Notice kind="danger">
-          <strong>This link could not be processed.</strong>
+          <strong>This link has an extraction problem.</strong>
           <br />
           {job.statusMessage}
+          <div className="btn-row" style={{ marginTop: 10 }}>
+            <button
+              className="btn btn--secondary btn--sm"
+              onClick={async () => {
+                await api.rerun(jobId);
+                toast('Retrying the full extraction path');
+                status.reload();
+              }}
+            >
+              Retry extraction
+            </button>
+            {job.requiredAction?.kind === 'configure_provider' ? (
+              <a className="btn btn--ghost btn--sm" href="#/settings">
+                Check setup
+              </a>
+            ) : null}
+          </div>
+        </Notice>
+      ) : null}
+
+      {job.state === 'NEEDS_INPUT' ? (
+        <Notice kind="warning">
+          <strong>One action is needed before processing can continue.</strong>
+          <br />
+          {job.statusMessage}
+          {job.requiredAction?.kind === 'connect_social' && job.requiredAction.platform ? (
+            <SocialAuthRecovery
+              platform={job.requiredAction.platform}
+              jobId={jobId}
+              onRecovered={() => status.reload()}
+              toast={toast}
+            />
+          ) : null}
         </Notice>
       ) : null}
 
@@ -163,6 +196,67 @@ export function Review({ jobId, toast }: { jobId: string; toast: (message: strin
 
       <Artifacts jobId={jobId} />
     </>
+  );
+}
+
+function SocialAuthRecovery({
+  platform,
+  jobId,
+  onRecovered,
+  toast,
+}: {
+  platform: SocialPlatform;
+  jobId: string;
+  onRecovered: () => void;
+  toast: (message: string) => void;
+}): JSX.Element {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="btn-row" style={{ marginTop: 10 }}>
+      {!sessionId ? (
+        <button
+          className="btn btn--secondary btn--sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const session = await api.startSocialSignIn(platform);
+              setSessionId(session.sessionId);
+              toast('Finish signing in in the browser window that opened');
+            } catch (err) {
+              toast(err instanceof Error ? err.message : 'Could not start sign-in');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Sign in once
+        </button>
+      ) : (
+        <button
+          className="btn btn--sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.completeSocialSignIn(platform, sessionId);
+              await api.rerun(jobId);
+              setSessionId(null);
+              toast('Signed in — retrying this link now');
+              onRecovered();
+            } catch (err) {
+              toast(err instanceof Error ? err.message : 'Sign-in was not detected yet');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          I&rsquo;ve signed in — retry
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -282,7 +376,23 @@ function SpecReview({
               .
             </>
           ) : (
-            'No actionable items were found in this post — nothing was invented to fill the gap.'
+            <>
+              <strong>No implementation path was generated.</strong> This is an analysis failure, not a useful
+              conclusion about the link.{' '}
+              {view.job ? (
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={async () => {
+                    await api.rerun(view.job!.jobId);
+                    toast('Re-running the full pipeline');
+                    onChanged();
+                  }}
+                >
+                  re-run this link
+                </button>
+              ) : null}
+              .
+            </>
           )}
         </Notice>
       ) : (

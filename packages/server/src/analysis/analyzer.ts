@@ -69,9 +69,12 @@ negotiation line, a way to structure a morning, a mental model, a phrase worth r
 worth trying — all of it counts if a person could put it into practice. Be generous and imaginative
 about what can be turned into an action.
 
-Only return zero items when the content genuinely carries nothing a person could act on: pure
-entertainment with no takeaway, an ad, or engagement bait. That is a real and expected outcome, but it
-should be uncommon. If you can find one honest, useful thing in it, return that one thing.
+Every successfully retrieved item must produce at least one useful outcome. If the source gives direct
+advice, turn that advice into an implementation. If it is commentary, entertainment, an ad, or a mental
+model without an explicit instruction, create one grounded generate_file item: a short application note
+that preserves what the source actually says, identifies the question or idea worth testing, and proposes
+a small experiment or reflection. Label that experiment as an application of the source, not as advice
+the creator stated. Never return an empty items array for content that was successfully retrieved.
 
 MAKE IT THEIRS, NOT GENERIC
 You may be given a description of this person's actual life — their tools, their places, the people
@@ -166,7 +169,7 @@ interface ModelResponse {
  */
 export async function analyze(input: AnalysisInput): Promise<AnalysisResult> {
   if (!input.mergedText.trim()) {
-    return emptyResult(input, 'Nothing could be extracted from this link, so there is nothing to act on.');
+    throw new Error('Analysis requires extracted source content.');
   }
 
   const modelResult = llm().live ? await analyzeWithModel(input) : null;
@@ -200,7 +203,7 @@ function describeTheirLife(userId: string): string {
   }
 
   const connected = listConnectors(userId)
-    .filter((connector) => connector.configured)
+    .filter((connector) => connector.configured && !connector.kind.startsWith('social-'))
     .map((connector) => connector.label);
   if (connected.length > 0) {
     parts.push(`Tools they have actually connected: ${connected.join(', ')}.`);
@@ -245,12 +248,19 @@ async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | 
   const summary = (body.summary ?? '').trim();
   if (!summary) return null;
 
+  if (items.length === 0) {
+    return learningFallback(input, summary, {
+      modelTokens: response.usage.inputTokens + response.usage.outputTokens,
+      usd: response.usage.usd,
+    }, llm().name);
+  }
+
   return {
     title: (body.title ?? input.postTitle ?? 'Captured post').trim().slice(0, 120),
     summaryPlainEnglish: summary,
     technicalSpec: renderTechnicalSpec(input, summary, items),
     items,
-    noActionableItems: body.noActionableItems === true || items.length === 0,
+    noActionableItems: false,
     usage: {
       modelTokens: response.usage.inputTokens + response.usage.outputTokens,
       usd: response.usage.usd,
@@ -305,14 +315,7 @@ function analyzeOffline(input: AnalysisInput): AnalysisResult {
   const tips = extractCandidateTips(input.mergedText, input.lowConfidence ? 3 : 6);
 
   if (tips.length === 0) {
-    return emptyResult(
-      input,
-      input.lowConfidence
-        ? 'The available extraction was incomplete, so no reliable actionable items could be proposed. ' +
-          'The advice may be in the video audio or on-screen text; configure media extraction and re-run this link.'
-        : 'No actionable AI advice was found in this post. The extracted content reads as commentary or ' +
-          'entertainment rather than a tip you could set up, so nothing was proposed.',
-    );
+    return learningFallback(input);
   }
 
   const items: DraftItem[] = tips.map((tip) => {
@@ -474,15 +477,94 @@ function renderOfflineSummary(input: AnalysisInput, tips: string[]): string {
   return `${lead}\n\n${bullets}\n\nEach one is listed below as a separate item you can approve or skip.${caveat}`;
 }
 
-function emptyResult(input: AnalysisInput, summary: string): AnalysisResult {
+/**
+ * A grounded safety net for successfully retrieved content that does not state
+ * a direct instruction. The product still returns value, but it does not put
+ * invented words in the creator's mouth: the proposed experiment is labelled
+ * as the app's application of the source.
+ */
+function learningFallback(
+  input: AnalysisInput,
+  modelSummary?: string,
+  usage: { modelTokens: number; usd: number } = { modelTokens: 0, usd: 0 },
+  analyzer: LlmProviderName = 'offline',
+): AnalysisResult {
+  const taggedLines = input.mergedText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const excerpts = taggedLines
+    .map((line) => line.replace(/^\[\d+\]\s*\([^)]*\)\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  const sourceSegments = Array.from(
+    new Set(
+      taggedLines
+        .map((line) => Number(line.match(/^\[(\d+)\]/)?.[1]))
+        .filter((value) => Number.isFinite(value)),
+    ),
+  ).slice(0, 20);
+  const title = input.postTitle?.trim().slice(0, 120) || titleFromTip(excerpts[0] ?? 'Apply this saved idea');
+  const filename = `${slugify(title, 48) || 'saved-idea'}-application-note.md`;
+  const personalContext = getUserById(input.userId)?.preferences.personalContext?.trim();
+  const sourceBlock = excerpts.map((excerpt) => `> ${excerpt}`).join('\n>\n');
+  const content = [
+    `# Apply: ${title}`,
+    '',
+    `Source: ${input.url}`,
+    '',
+    '## What the source actually contains',
+    '',
+    sourceBlock || '> Review the extracted transcript attached to this capture.',
+    '',
+    '## Find the delta',
+    '',
+    '- What here is different from what you already do, believe, or use?',
+    '- Where in your real week would that difference matter?',
+    '- What evidence would tell you this idea is an improvement rather than just interesting?',
+    ...(personalContext
+      ? ['', 'Context to use when answering:', '', personalContext]
+      : []),
+    '',
+    '## Smallest useful test',
+    '',
+    '1. Choose one claim, pattern, or example from the source.',
+    '2. Compare it with your current process in one specific situation.',
+    '3. Run the smallest reversible test you can complete this week.',
+    '4. Record what became faster, clearer, easier, or more reliable.',
+    '5. Keep, adapt, or discard it based on that result.',
+    '',
+    '> The test above is an application proposed by the app; it is not presented as advice stated by the creator.',
+  ].join('\n');
+
+  const item: DraftItem = {
+    title: 'Test the saved idea in your life',
+    type: 'generate_file',
+    why: 'The source did not state a clean instruction, but discarding it would lose why you saved it. This note turns it into a small, explicit test without inventing a claim the creator did not make.',
+    proposedMethod: `Create ${filename} with the source excerpts, a delta check, and a one-week reversible experiment.`,
+    prerequisites: [],
+    missingPrerequisites: [],
+    effort: 'low',
+    impact: 'medium',
+    riskTier: ITEM_TYPE_RISK.generate_file,
+    scopes: ITEM_TYPE_SCOPES.generate_file,
+    requiresBrowser: false,
+    parameters: { filename, content },
+    sourceSegments,
+    duplicateOfItemId: null,
+  };
+  const summary = modelSummary
+    ? `${modelSummary}\n\nRather than discard the link, the app prepared one grounded application note so you can test whether the idea changes anything in your life or work.`
+    : 'This source did not state a clean step-by-step recommendation. Rather than discard it, the app prepared a grounded application note that preserves the source and turns your interest in it into one small test.';
+
   return {
-    title: input.postTitle?.trim().slice(0, 120) || `${PLATFORM_LABELS[input.platform]} post`,
+    title,
     summaryPlainEnglish: summary,
-    technicalSpec: renderTechnicalSpec(input, summary, []),
-    items: [],
-    noActionableItems: true,
-    usage: { modelTokens: 0, usd: 0 },
-    analyzer: llm().name,
+    technicalSpec: renderTechnicalSpec(input, summary, [item]),
+    items: [item],
+    noActionableItems: false,
+    usage,
+    analyzer,
   };
 }
 
@@ -508,7 +590,7 @@ function renderTechnicalSpec(input: AnalysisInput, summary: string, items: Draft
   ].filter(Boolean);
 
   if (items.length === 0) {
-    lines.push('No actionable items were identified for this link. Nothing will be implemented.');
+    lines.push('No implementation path was generated. This result should be treated as an analysis failure and retried.');
     return lines.join('\n');
   }
 

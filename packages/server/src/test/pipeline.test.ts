@@ -154,7 +154,7 @@ describe('capture → spec → approve → implement', () => {
     expect(second.body.jobId).toBe(first.body.jobId);
   });
 
-  it('reports plainly when nothing can be extracted, and fabricates nothing', async () => {
+  it('classifies retrieval failure as a product failure, never as no insight', async () => {
     const { token } = await harness.signup();
     // A domain that resolves to nothing: no captions, no audio, no page text.
     const capture = await harness.request<{ jobId: string }>('POST', '/v1/links', {
@@ -164,15 +164,22 @@ describe('capture → spec → approve → implement', () => {
     await runQueue();
 
     const job = getJobUnscoped(capture.body.jobId)!;
-    expect(['NO_ACTION', 'FAILED']).toContain(job.state);
-    expect(job.statusMessage).toBeTruthy();
+    expect(job.state).toBe('FAILED');
+    expect(job.failureCode).toBe('extraction_failed');
+    expect(job.requiredAction?.kind).toMatch(/retry|configure_provider/);
+    expect(job.statusMessage).toContain('not a claim that the link had no useful insight');
 
     const spec = getSpecByJob(capture.body.jobId);
-    // Either no spec at all, or a spec that honestly says there is nothing.
-    if (spec) expect(spec.items).toHaveLength(0);
+    expect(spec).toBeNull();
+
+    // Terminal failures can actually be reopened. The old state guard silently
+    // ignored reruns from FAILED/NEEDS_INPUT.
+    const retry = await harness.request('POST', `/v1/links/${capture.body.jobId}/rerun`, { token });
+    expect(retry.status).toBe(202);
+    expect(getJobUnscoped(capture.body.jobId)!.state).toBe('RECEIVED');
   });
 
-  it('returns no items for pure entertainment rather than inventing advice', async () => {
+  it('turns non-instructional content into a grounded application note', async () => {
     const { token } = await harness.signup();
     const capture = await harness.request<{ jobId: string }>('POST', '/v1/links', {
       token,
@@ -184,11 +191,12 @@ describe('capture → spec → approve → implement', () => {
     await runQueue();
 
     const spec = getSpecByJob(capture.body.jobId);
-    if (spec) {
-      expect(spec.items).toHaveLength(0);
-      expect(spec.noActionableItems).toBe(true);
-    }
-    expect(getJobUnscoped(capture.body.jobId)!.state).toBe('NO_ACTION');
+    expect(spec).not.toBeNull();
+    expect(spec!.items).toHaveLength(1);
+    expect(spec!.items[0]!.type).toBe('generate_file');
+    expect(spec!.items[0]!.parameters['content']).toContain('POV: when the code compiles first try');
+    expect(spec!.noActionableItems).toBe(false);
+    expect(getJobUnscoped(capture.body.jobId)!.state).toBe('SPEC_READY');
   });
 
   it('reads a text-on-image carousel through the vision path', async () => {
@@ -322,7 +330,7 @@ describe('capture → spec → approve → implement', () => {
 });
 
 describe('extraction cache', () => {
-  it('reuses a previous extraction for the same URL', async () => {
+  it('reuses extraction only within the same user and never leaks private content across users', async () => {
     const { token, userId } = await harness.signup();
 
     const first = await harness.request<{ jobId: string }>('POST', '/v1/links', {
@@ -334,8 +342,20 @@ describe('extraction cache', () => {
     });
     await runQueue();
 
-    // A second user sharing the same link reuses the cached extraction — the
-    // cache is content-addressed, not user-scoped (spec §6.5).
+    await harness.request('DELETE', `/v1/links/${first.body.jobId}`, { token });
+    const sameUser = await harness.request<{ jobId: string }>('POST', '/v1/links', {
+      token,
+      body: {
+        url: 'https://www.instagram.com/reel/CACHEDLINK/?igshid=same-user',
+        sharedText: 'Create a reusable skill that reviews your calendar every morning.',
+      },
+    });
+    await runQueue();
+    expect(getJobUnscoped(sameUser.body.jobId)!.state).toBe('SPEC_READY');
+    expect(getSpecByJob(sameUser.body.jobId)!.items.length).toBeGreaterThan(0);
+
+    // A second user must not receive the first user's transcript or shared
+    // caption, even when the normalized URL is identical.
     const other = await harness.signup('other@example.com');
     const second = await harness.request<{ jobId: string }>('POST', '/v1/links', {
       token: other.token,
@@ -344,9 +364,8 @@ describe('extraction cache', () => {
     await runQueue();
 
     const secondJob = getJobUnscoped(second.body.jobId)!;
-    expect(secondJob.state).toBe('SPEC_READY');
-    expect(getSpecByJob(second.body.jobId)!.items.length).toBeGreaterThan(0);
-    // Cached: the second job pays nothing for extraction.
+    expect(secondJob.state).toBe('FAILED');
+    expect(getSpecByJob(second.body.jobId)).toBeNull();
     expect(secondJob.cost.asrSeconds).toBe(0);
     expect(first.body.jobId).not.toBe(second.body.jobId);
     expect(userId).not.toBe(other.userId);

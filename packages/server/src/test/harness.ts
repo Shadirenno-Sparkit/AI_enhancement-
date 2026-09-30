@@ -57,6 +57,7 @@ export async function createHarness(env: Record<string, string> = {}): Promise<H
     // Browser capture is on by default in the app now; tests must not launch
     // Chromium per fixture or the suite goes from ~16s to ~110s.
     ENABLE_BROWSER_AGENT: 'false',
+    SOCIAL_AUTH_MODE: 'disabled',
     // Point the external binaries at names that cannot exist, so the suite
     // stays hermetic and fast on machines where yt-dlp/ffmpeg *are* installed.
     // Without this the fetcher shells out to the network for every fixture URL
