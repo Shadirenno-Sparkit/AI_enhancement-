@@ -1,5 +1,5 @@
 import type { Job, JobState, LibraryEntry } from '@aiapp/shared';
-import { PLATFORM_LABELS } from '@aiapp/shared';
+import { INPUT_KIND_LABELS, PLATFORM_LABELS } from '@aiapp/shared';
 import { writeIndex, type IndexEntry } from '../artifacts/fileManager.js';
 import { getInsightSourceByJob } from '../repo/insights.js';
 import { listJobs } from '../repo/jobs.js';
@@ -13,6 +13,10 @@ const STATE_LABELS: Record<JobState, string> = {
   FETCHED: 'processing',
   TRANSCRIBED: 'processing',
   NORMALIZED: 'processing',
+  TRIAGED: 'processing',
+  // Triaged, worth something, but the deep plan has not been spent yet. It is
+  // waiting on the user rather than on the system, so it reads as an invitation.
+  AWAITING_PLAN: 'ready to plan',
   ANALYZED: 'processing',
   SPEC_READY: 'spec ready',
   AWAITING_DECISION: 'spec ready',
@@ -44,7 +48,10 @@ export function libraryEntryFor(job: Job): LibraryEntry {
     jobId: job.jobId,
     url: job.url,
     platform: job.platform,
-    title: job.title ?? `${PLATFORM_LABELS[job.platform]} post`,
+    inputKind: job.inputKind,
+    title:
+      job.title ??
+      (job.inputKind === 'link' ? `${PLATFORM_LABELS[job.platform]} post` : INPUT_KIND_LABELS[job.inputKind]),
     state: job.state,
     statusMessage: job.statusMessage,
     specId: spec?.specId ?? null,
@@ -52,6 +59,9 @@ export function libraryEntryFor(job: Job): LibraryEntry {
     itemCounts: counts,
     folderPath: job.folderName ?? null,
     lowConfidence: source?.lowConfidence ?? false,
+    domains: job.domains,
+    triageVerdict: job.triageVerdict ?? null,
+    valueScore: job.valueScore ?? null,
     cost: job.cost,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

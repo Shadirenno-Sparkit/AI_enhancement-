@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import type { User, UserPreferences } from '@aiapp/shared';
 import { config } from '../config.js';
 import { db, now, parseJson, today } from '../db/index.js';
+import { seedProfile } from './profile.js';
 import { id, sha256 } from '../util/ids.js';
 
 interface UserRow {
@@ -25,6 +26,9 @@ export function defaultPreferences(): UserPreferences {
     weeklyDigest: true,
     dryRunFirst: false,
     personalContext: null,
+    autoPlanThreshold: cfg.autoPlanThreshold,
+    mutedDomains: [],
+    learnAboutMe: true,
   };
 }
 
@@ -56,6 +60,10 @@ export function createUser(email: string, password: string, displayName?: string
       timestamp,
       timestamp,
     );
+  // Seed the life context graph with what the signup form already told us.
+  // Nothing is guessed here — a profile that starts with invented facts would
+  // produce recommendations grounded in fiction.
+  seedProfile(userId, displayName?.trim() || '');
   return getUserById(userId)!;
 }
 
@@ -120,6 +128,10 @@ export function deleteUserData(userId: string, options: { keepAccount: boolean }
     database.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
     database.prepare('DELETE FROM usage_daily WHERE user_id = ?').run(userId);
     database.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId);
+    // The life context graph is the most personal thing stored, so erasure has
+    // to reach it — a profile surviving a data wipe would be the worst leak here.
+    database.prepare('DELETE FROM profile_facts WHERE user_id = ?').run(userId);
+    database.prepare('DELETE FROM pathways WHERE user_id = ?').run(userId);
     // The audit log is deliberately preserved but de-identified: the operator
     // keeps the record that actions happened without retaining who they belonged to.
     database.prepare("UPDATE audit_log SET user_id = NULL, detail = '[erased]' WHERE user_id = ?").run(userId);

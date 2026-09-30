@@ -30,7 +30,7 @@ where it is verified.
 | BR-U4 | Incorporate the post's own caption | ✅ | Waterfall step 0 → `post_description` | "deduplicates the same tip arriving from caption, audio and OCR" |
 | BR-U5 | Record extraction method + confidence, flag low results | ✅ | `Provenance` + per-segment confidence; `lowConfidence` in `normalizer.ts` | "flags thin extractions from lossy sources", "does not cry wolf over a short but verbatim caption" |
 | BR-U6 | YouTube, Instagram, TikTok, X, LinkedIn, Facebook | ✅ | `resolvePlatform` + per-platform strategy | "classifies every platform in the coverage matrix" |
-| BR-U7 | Degrade gracefully with a clear message | ✅ | `describeFailure` in `transcript.ts`; `NO_ACTION` with an explanation | "reports plainly when nothing can be extracted" |
+| BR-U7 | Degrade gracefully with a clear message | ✅ | `describeFailure` in `transcript.ts`; typed `NEEDS_INPUT`/`FAILED` recovery | "reports plainly when nothing can be extracted" |
 
 ## Analysis & specification (BRD §8.3)
 

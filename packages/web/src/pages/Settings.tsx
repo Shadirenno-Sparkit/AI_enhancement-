@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { RiskTier, SocialPlatform, TrustPosture, User } from '@aiapp/shared';
+import { LIFE_DOMAINS, LIFE_DOMAIN_LABELS } from '@aiapp/shared';
 import { api, type Capabilities } from '../api';
 import { Badge, Disclosure, Notice, Spinner, relativeTime } from '../components/ui';
 import { IconDownload } from '../components/icons';
@@ -182,6 +183,80 @@ export function Settings({
           <p className="faint" style={{ margin: '6px 0 0' }}>
             Saved when you click away. Written in plain language &mdash; it goes to the model as-is.
           </p>
+        </div>
+
+        <div className="group__row">
+          <label className="checkbox-row" style={{ padding: 0 }}>
+            <input
+              type="checkbox"
+              checked={user.preferences.learnAboutMe}
+              onChange={(e) => void update({ learnAboutMe: e.target.checked })}
+            />
+            <span>
+              <strong>Suggest things the app notices about me</strong>
+              <br />
+              <span className="muted" style={{ fontSize: 14 }}>
+                Suggestions wait on the You tab until you confirm them. They are never added silently.
+              </span>
+            </span>
+          </label>
+        </div>
+      </Group>
+
+      <Group
+        title="Planning depth"
+        hint="Every capture is read. Choose when the app should spend the deeper planning call automatically."
+      >
+        {[
+          { value: 0, title: 'Plan every capture', description: 'Best utility: every successfully read capture becomes a plan or grounded experiment.' },
+          { value: 0.55, title: 'Balance cost and depth', description: 'Lower-value captures wait behind a Plan this button.' },
+          { value: 1.01, title: 'Ask before deep planning', description: 'Read and classify first; wait for you before the full plan.' },
+        ].map((option) => (
+          <label
+            key={option.value}
+            className={
+              user.preferences.autoPlanThreshold === option.value
+                ? 'option-card option-card--selected'
+                : 'option-card'
+            }
+          >
+            <input
+              type="radio"
+              name="planning-depth"
+              checked={user.preferences.autoPlanThreshold === option.value}
+              onChange={() => void update({ autoPlanThreshold: option.value })}
+            />
+            <div>
+              <strong>{option.title}</strong>
+              <p className="muted" style={{ margin: '2px 0 0', fontSize: 14 }}>
+                {option.description}
+              </p>
+            </div>
+          </label>
+        ))}
+
+        <div className="group__row">
+          <strong>Do not make plans in these areas</strong>
+          <div className="badge-row" style={{ marginTop: 10 }}>
+            {LIFE_DOMAINS.filter((domain) => domain !== 'other').map((domain) => {
+              const muted = user.preferences.mutedDomains.includes(domain);
+              return (
+                <label key={domain} className="checkbox-row" style={{ padding: '5px 8px' }}>
+                  <input
+                    type="checkbox"
+                    checked={muted}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                        ? [...user.preferences.mutedDomains, domain]
+                        : user.preferences.mutedDomains.filter((candidate) => candidate !== domain);
+                      void update({ mutedDomains: next });
+                    }}
+                  />
+                  <span>{LIFE_DOMAIN_LABELS[domain]}</span>
+                </label>
+              );
+            })}
+          </div>
         </div>
       </Group>
 

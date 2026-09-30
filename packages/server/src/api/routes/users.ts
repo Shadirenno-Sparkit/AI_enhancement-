@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { RISK_TIERS, TRUST_POSTURES } from '@aiapp/shared';
+import { LIFE_DOMAINS, RISK_TIERS, TRUST_POSTURES } from '@aiapp/shared';
 import { purgeExpiredMedia, removeJobFolder, writeIndex } from '../../artifacts/fileManager.js';
 import { config } from '../../config.js';
 import { audit, listAudit } from '../../repo/audit.js';
@@ -46,6 +46,9 @@ const preferencesSchema = z.object({
   dryRunFirst: z.boolean().optional(),
   // Generous cap: this is a paragraph about someone's life, not a tweet.
   personalContext: z.string().max(4000).nullable().optional(),
+  autoPlanThreshold: z.number().min(0).max(1.01).optional(),
+  mutedDomains: z.array(z.enum(LIFE_DOMAINS)).max(LIFE_DOMAINS.length).optional(),
+  learnAboutMe: z.boolean().optional(),
 });
 
 usersRouter.patch(

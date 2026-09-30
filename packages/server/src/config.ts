@@ -132,6 +132,9 @@ export interface Config {
   maxAsrSecondsPerLink: number;
   enableAutonomousImplementation: boolean;
   defaultTrustPosture: TrustPosture;
+  /** Triage value score at or above which a capture is planned without asking. */
+  autoPlanThreshold: number;
+  enableTriage: boolean;
   workerConcurrency: number;
   notifyChannels: string[];
   smtpUrl: string;
@@ -211,6 +214,10 @@ export function loadConfig(): Config {
     maxAsrSecondsPerLink: num('MAX_ASR_SECONDS_PER_LINK', 900),
     enableAutonomousImplementation: bool('ENABLE_AUTONOMOUS_IMPLEMENTATION', true),
     defaultTrustPosture,
+    // Utility-first default: every readable capture is planned. Raise this to
+    // park lower-value captures one tap away when cost control matters more.
+    autoPlanThreshold: Math.max(0, Math.min(1.01, num('AUTO_PLAN_THRESHOLD', 0))),
+    enableTriage: bool('ENABLE_TRIAGE', true),
     workerConcurrency: num('WORKER_CONCURRENCY', 2),
     notifyChannels: list('NOTIFY_CHANNELS', ['log']),
     smtpUrl: str('SMTP_URL', ''),

@@ -10,6 +10,16 @@ import { llm } from '../providers/llm.js';
 import { createLogger, errorMessage } from '../util/logger.js';
 import { isAllowedDownloadUrl, isForbiddenCommand, type ItemSandbox } from './guardrails.js';
 import { nextRunFor } from './cron.js';
+import { automationWorkflow, createProject } from './automation.js';
+import {
+  acquireMedia,
+  buildHabit,
+  contactPerson,
+  financialReview,
+  learnTopic,
+  purchase,
+  researchTopic,
+} from './lifeHandlers.js';
 
 const log = createLogger('impl');
 
@@ -556,6 +566,7 @@ function truncate(text: string, max: number): string {
 }
 
 export const HANDLERS: Record<SpecItem['type'], Handler> = {
+  // Acting on the user's AI environment.
   create_skill: createSkill,
   set_instruction: setInstruction,
   schedule_task: scheduleTask,
@@ -564,6 +575,17 @@ export const HANDLERS: Record<SpecItem['type'], Handler> = {
   download_file: downloadFile,
   configure_setting: configureSetting,
   run_command: runCommand,
+  create_project: createProject,
+  automation_workflow: automationWorkflow,
+  // Acting on the rest of their life. Each stops one step short of the
+  // irreversible act — see lifeHandlers.ts.
+  acquire_media: acquireMedia,
+  purchase: purchase,
+  build_habit: buildHabit,
+  learn_topic: learnTopic,
+  contact_person: contactPerson,
+  research_topic: researchTopic,
+  financial_review: financialReview,
 };
 
 /** Replays an item's recorded undo steps (BR-I6). */

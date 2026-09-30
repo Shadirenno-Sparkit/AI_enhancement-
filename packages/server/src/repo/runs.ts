@@ -12,6 +12,7 @@ interface RunRow {
   items: string;
   actions: string;
   overall: string | null;
+  confirmed_item_ids: string | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -27,6 +28,7 @@ function toRun(row: RunRow): ImplementationRun {
     items: parseJson<ItemResult[]>(row.items, []),
     actions: parseJson<RunAction[]>(row.actions, []),
     overall: (row.overall as ItemResult['status'] | 'mixed' | null) ?? null,
+    confirmedItemIds: parseJson<string[]>(row.confirmed_item_ids, []),
     startedAt: row.started_at,
     finishedAt: row.finished_at,
   };
@@ -37,14 +39,28 @@ export function createRun(input: {
   jobId: string;
   userId: string;
   dryRun: boolean;
+  /**
+   * Items the user explicitly confirmed after the trust dial held them.
+   * Scoped to this run: confirming one sensitive item never widens the posture
+   * for the next one.
+   */
+  confirmedItemIds?: string[];
 }): ImplementationRun {
   const runId = id('run');
   db()
     .prepare(
-      `INSERT INTO runs (run_id, spec_id, job_id, user_id, status, dry_run, items, actions, started_at)
-       VALUES (?, ?, ?, ?, 'queued', ?, '[]', '[]', ?)`,
+      `INSERT INTO runs (run_id, spec_id, job_id, user_id, status, dry_run, items, actions, confirmed_item_ids, started_at)
+       VALUES (?, ?, ?, ?, 'queued', ?, '[]', '[]', ?, ?)`,
     )
-    .run(runId, input.specId, input.jobId, input.userId, input.dryRun ? 1 : 0, now());
+    .run(
+      runId,
+      input.specId,
+      input.jobId,
+      input.userId,
+      input.dryRun ? 1 : 0,
+      JSON.stringify(input.confirmedItemIds ?? []),
+      now(),
+    );
   return getRunUnscoped(runId)!;
 }
 

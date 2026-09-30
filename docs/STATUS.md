@@ -82,7 +82,7 @@ Honest ones, worth knowing before relying on this:
 
 ## Test coverage
 
-92 tests across six suites:
+131 tests across seven suites:
 
 | Suite | Covers |
 | --- | --- |
@@ -90,6 +90,9 @@ Honest ones, worth knowing before relying on this:
 | `pipeline.test.ts` | Capture → spec → approve → implement, artifact layout, carousel/audio paths, user-scoped caching, terminal-job retry and zip export |
 | `security.test.ts` | Auth, refresh rotation, enumeration resistance, rate limits, per-user isolation, path traversal, erasure, scope containment, trust dial, dry-run, failure isolation, audit completeness, SSRF and command blocklists, budgets |
 | `units.test.ts` | Cron parsing/next-run/description, zip structure, lenient JSON recovery, model-path analyzer incl. server-side scope assignment, markdown escaping |
+| `personalization.test.ts` | Profile invariants, triage, universal capture, pathways, confirmation and life-domain safety |
+| `agentic.test.ts` | Tool-use implementation, reversibility, permission denial and audit coverage |
+| `openai.test.ts` | OpenAI-compatible analysis and tool-calling transport |
 
 ```bash
 npm test

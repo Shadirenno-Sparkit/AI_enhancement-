@@ -155,6 +155,10 @@ const STATE_LABELS: Record<JobState, { text: string; tone: 'default' | 'accent' 
   FETCHED: { text: 'Reading', tone: 'info' },
   TRANSCRIBED: { text: 'Transcribing', tone: 'info' },
   NORMALIZED: { text: 'Analysing', tone: 'info' },
+  TRIAGED: { text: 'Sizing up', tone: 'info' },
+  // Waiting on the user, not on the system — so it reads as an invitation
+  // rather than a stall.
+  AWAITING_PLAN: { text: 'Ready to plan', tone: 'accent' },
   ANALYZED: { text: 'Analysing', tone: 'info' },
   SPEC_READY: { text: 'Ready to review', tone: 'accent' },
   AWAITING_DECISION: { text: 'Ready to review', tone: 'accent' },

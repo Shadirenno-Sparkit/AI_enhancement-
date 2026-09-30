@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   cost_model_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd          REAL NOT NULL DEFAULT 0,
   attempts       INTEGER NOT NULL DEFAULT 0,
+  input_kind    TEXT NOT NULL DEFAULT 'link',
+  body_text     TEXT,
+  triage_verdict TEXT,
+  value_score   REAL,
+  domains       TEXT NOT NULL DEFAULT '[]',
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
   UNIQUE (user_id, idempotency_key)
@@ -106,6 +111,8 @@ CREATE TABLE IF NOT EXISTS specs (
   summary       TEXT NOT NULL,
   technical_spec TEXT NOT NULL,
   no_actionable_items INTEGER NOT NULL DEFAULT 0,
+  domains       TEXT NOT NULL DEFAULT '[]',
+  proposed_facts TEXT NOT NULL DEFAULT '[]',
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_specs_job ON specs(job_id);
@@ -128,7 +135,9 @@ CREATE TABLE IF NOT EXISTS spec_items (
   requires_browser INTEGER NOT NULL DEFAULT 0,
   parameters    TEXT NOT NULL DEFAULT '{}',
   source_segments TEXT NOT NULL DEFAULT '[]',
-  duplicate_of_item_id TEXT
+  duplicate_of_item_id TEXT,
+  domain         TEXT NOT NULL DEFAULT 'ai_workflow',
+  personalized_on TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_items_spec ON spec_items(spec_id, ordinal);
 
@@ -154,6 +163,7 @@ CREATE TABLE IF NOT EXISTS runs (
   dry_run     INTEGER NOT NULL DEFAULT 0,
   items       TEXT NOT NULL DEFAULT '[]',
   actions     TEXT NOT NULL DEFAULT '[]',
+  confirmed_item_ids TEXT NOT NULL DEFAULT '[]',
   overall     TEXT,
   started_at  TEXT NOT NULL,
   finished_at TEXT
@@ -238,3 +248,51 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Life context graph
+--
+-- What the app knows about the person it is working for. Every fact carries its
+-- source and confidence, and inferred facts stay unconfirmed until the user
+-- accepts them — the analyzer only ever reads confirmed rows, so the system
+-- cannot quietly assemble a picture of someone they did not agree to.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS profile_facts (
+  fact_id    TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  category   TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  detail     TEXT,
+  source     TEXT NOT NULL DEFAULT 'user_stated',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  confirmed  INTEGER NOT NULL DEFAULT 1,
+  -- Set when the fact was proposed while analysing a capture.
+  job_id     TEXT,
+  evidence   TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  -- One value per key per user: re-stating a fact updates it rather than
+  -- accumulating contradictory copies the analyzer would have to choose between.
+  UNIQUE (user_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_facts_user ON profile_facts(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_facts_pending ON profile_facts(user_id, confirmed);
+
+-- Routes through one capture. A spec with no pathway rows renders as a flat
+-- item list, which is what a single-option capture produces.
+CREATE TABLE IF NOT EXISTS pathways (
+  pathway_id  TEXT PRIMARY KEY,
+  spec_id     TEXT NOT NULL REFERENCES specs(spec_id) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  stance      TEXT NOT NULL,
+  rationale   TEXT NOT NULL,
+  grounded_in_facts TEXT NOT NULL DEFAULT '[]',
+  estimated_minutes INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL NOT NULL DEFAULT 0,
+  item_ids    TEXT NOT NULL DEFAULT '[]',
+  recommended INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pathways_spec ON pathways(spec_id, ordinal);

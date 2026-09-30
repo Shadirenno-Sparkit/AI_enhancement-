@@ -2,19 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@aiapp/shared';
 import { api, loadTokens, saveTokens, type Capabilities } from './api';
 import { Notice, Spinner, Toast } from './components/ui';
-import { IconChart, IconCheck, IconGear, IconInbox, IconPlus, IconArrowLeft } from './components/icons';
+import { IconChart, IconCheck, IconGear, IconInbox, IconPlus, IconArrowLeft, IconSparkle } from './components/icons';
 import { useAsync, useHashRoute } from './hooks';
 import { flushQueue, registerServiceWorker } from './shareQueue';
 import { Auth } from './pages/Auth';
 import { Capture } from './pages/Capture';
 import { Digest } from './pages/Digest';
 import { Library } from './pages/Library';
+import { Profile } from './pages/Profile';
 import { Review } from './pages/Review';
 import { Settings } from './pages/Settings';
 
 const TABS = [
   { path: '/library', Icon: IconInbox, label: 'Inbox' },
   { path: '/capture', Icon: IconPlus, label: 'Capture' },
+  { path: '/profile', Icon: IconSparkle, label: 'You' },
   { path: '/digest', Icon: IconChart, label: 'Digest' },
   { path: '/settings', Icon: IconGear, label: 'Settings' },
 ];
@@ -28,6 +30,7 @@ function titleFor(route: string): string {
   if (route.startsWith('/job/')) return 'Review';
   if (route.startsWith('/captured')) return 'Captured';
   if (route.startsWith('/capture')) return 'Capture';
+  if (route.startsWith('/profile')) return 'You';
   if (route.startsWith('/digest')) return 'Digest';
   if (route.startsWith('/settings')) return 'Settings';
   return 'Inbox';
@@ -212,6 +215,10 @@ function Router({
     );
   }
 
+  if (route.startsWith('/profile')) {
+    return <Profile />;
+  }
+
   if (route.startsWith('/digest')) {
     return <Digest onOpen={(jobId) => navigate(`/job/${jobId}`)} />;
   }
@@ -228,7 +235,7 @@ function Router({
     );
   }
 
-  return <Library onOpen={(entry) => navigate(`/job/${entry.jobId}`)} />;
+  return <Library onOpen={(entry) => navigate(`/job/${entry.jobId}`)} toast={toast} />;
 }
 
 /**

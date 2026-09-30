@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { DecisionChoice, ItemResult, ItemType, Provenance, SocialPlatform } from '@aiapp/shared';
-import { PLATFORM_LABELS } from '@aiapp/shared';
+import type { DecisionChoice, ItemResult, Pathway, Provenance, SocialPlatform } from '@aiapp/shared';
+import { INPUT_KIND_LABELS, ITEM_TYPE_LABELS, PATHWAY_STANCE_LABELS, PLATFORM_LABELS } from '@aiapp/shared';
 import { api, type ReviewItem, type SpecView } from '../api';
 import {
   Badge,
@@ -15,17 +15,6 @@ import {
 } from '../components/ui';
 import { IconAlert, IconDownload, IconExternal, IconFile } from '../components/icons';
 import { useAsync } from '../hooks';
-
-const TYPE_LABELS: Record<ItemType, string> = {
-  create_skill: 'Reusable skill',
-  set_instruction: 'Standing instruction',
-  schedule_task: 'Scheduled routine',
-  connect_tool: 'Connect a tool',
-  download_file: 'Download',
-  generate_file: 'Generated file',
-  configure_setting: 'Setting change',
-  run_command: 'Command',
-};
 
 const PROVENANCE_LABELS: Record<Provenance, string> = {
   post_description: 'post caption',
@@ -48,7 +37,7 @@ const CONTENT_PROVENANCES: Provenance[] = [
   'ocr_tesseract',
 ];
 
-const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'ANALYZED'];
+const PROCESSING_STATES = ['RECEIVED', 'RESOLVED', 'FETCHED', 'TRANSCRIBED', 'NORMALIZED', 'TRIAGED', 'ANALYZED'];
 
 /** The three outcomes an item can have, in escalating order of commitment. */
 const DECISION_OPTIONS: { id: DecisionChoice; label: string }[] = [
@@ -93,20 +82,25 @@ export function Review({ jobId, toast }: { jobId: string; toast: (message: strin
 
   return (
     <>
-      <h1>{job.title ?? `${PLATFORM_LABELS[job.platform]} post`}</h1>
+      <h1>
+        {job.title ?? (job.inputKind === 'link' ? `${PLATFORM_LABELS[job.platform]} post` : INPUT_KIND_LABELS[job.inputKind])}
+      </h1>
       <p className="faint" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <span>
-          {PLATFORM_LABELS[job.platform]} · captured {relativeTime(job.createdAt)}
+          {job.inputKind === 'link' ? PLATFORM_LABELS[job.platform] : INPUT_KIND_LABELS[job.inputKind]} · captured{' '}
+          {relativeTime(job.createdAt)}
         </span>
-        <a
-          href={job.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        >
-          open original
-          <IconExternal size={12} />
-        </a>
+        {job.inputKind === 'link' ? (
+          <a
+            href={job.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            open original
+            <IconExternal size={12} />
+          </a>
+        ) : null}
       </p>
 
       {processing ? (
@@ -163,10 +157,30 @@ export function Review({ jobId, toast }: { jobId: string; toast: (message: strin
       ) : null}
 
       {job.state === 'NO_ACTION' && !specId ? (
+        <Notice kind="danger">
+          <strong>No implementation path was generated.</strong>
+          <br />
+          This is an analysis failure, not a useful conclusion about the capture. {job.statusMessage}
+        </Notice>
+      ) : null}
+
+      {job.state === 'AWAITING_PLAN' && !specId ? (
         <Notice kind="info">
-          <strong>Nothing to act on.</strong>
+          <strong>Ready for the deeper planning pass.</strong>
           <br />
           {job.statusMessage}
+          <div className="btn-row" style={{ marginTop: 10 }}>
+            <button
+              className="btn btn--sm"
+              onClick={async () => {
+                await api.planNow(jobId);
+                toast('Working out what you should do…');
+                status.reload();
+              }}
+            >
+              Plan this
+            </button>
+          </div>
         </Notice>
       ) : null}
 
@@ -397,9 +411,29 @@ function SpecReview({
         </Notice>
       ) : (
         <>
+          {spec.pathways.length > 1 ? (
+            <PathwayChooser
+              pathways={spec.pathways}
+              itemsById={new Map(spec.items.map((item) => [item.itemId, item]))}
+              disabled={submitting}
+              onChoose={(pathway) => {
+                // Picking a route pre-selects its items and forgoes the rest.
+                // It stages the choice rather than submitting, so the user can
+                // still amend an individual item before committing.
+                const onRoute = new Set(pathway.itemIds);
+                setSelection(
+                  Object.fromEntries(
+                    spec.items.map((item) => [item.itemId, onRoute.has(item.itemId) ? 'approve' : 'forgo']),
+                  ),
+                );
+                toast(`“${pathway.label}” selected — review below, then confirm.`);
+              }}
+            />
+          ) : null}
+
           <div className="section-head">
             <h2>
-              {spec.items.length} proposed improvement{spec.items.length === 1 ? '' : 's'}
+              {spec.items.length} thing{spec.items.length === 1 ? '' : 's'} you could do
             </h2>
             {undecided.length > 0 ? (
               <div className="btn-row">
@@ -466,7 +500,7 @@ function SpecReview({
         </>
       )}
 
-      {run ? <RunResults run={run} /> : null}
+      {run ? <RunResults run={run} spec={spec} onChanged={onChanged} toast={toast} /> : null}
 
       <p className="section-label">Technical spec</p>
       <div className="card" style={{ padding: 0 }}>
@@ -513,7 +547,7 @@ function ItemCard({
         {/* One quiet line instead of four competing pills. Type is the only
             thing that changes what happens; effort and impact are context. */}
         <div className="item__meta">
-          <Badge tone="chip">{TYPE_LABELS[item.type]}</Badge>
+          <Badge tone="chip">{ITEM_TYPE_LABELS[item.type]}</Badge>
           <span>
             {item.effort} effort
             <span className="item__meta-sep"> · </span>
@@ -615,9 +649,23 @@ function ItemCard({
   );
 }
 
-function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
+function RunResults({
+  run,
+  spec,
+  onChanged,
+  toast,
+}: {
+  run: SpecView['run'];
+  spec: SpecView['spec'];
+  onChanged: () => void;
+  toast: (message: string) => void;
+}): JSX.Element | null {
+  const [confirming, setConfirming] = useState(false);
   if (!run) return null;
   const active = run.items.filter((item) => item.status !== 'skipped');
+  // Items the trust dial approved but held. Releasing them is a separate,
+  // explicit act — not a re-approval.
+  const heldBack = run.items.filter((item) => item.status === 'needs_input');
 
   return (
     <>
@@ -635,6 +683,36 @@ function RunResults({ run }: { run: SpecView['run'] }): JSX.Element | null {
         </p>
 
         {active.length === 0 ? <p className="muted">Nothing ran.</p> : null}
+
+        {heldBack.length > 0 ? (
+          <div className="confirm-strip">
+            <p style={{ margin: 0, fontSize: 14 }}>
+              <strong>
+                {heldBack.length} item{heldBack.length === 1 ? '' : 's'} waiting on you.
+              </strong>{' '}
+              Your trust setting holds higher-risk items until you say yes to them specifically.
+            </p>
+            <button
+              type="button"
+              className="btn btn--sm"
+              disabled={confirming}
+              onClick={async () => {
+                setConfirming(true);
+                try {
+                  await api.confirmItems(spec.specId, heldBack.map((item) => item.itemId));
+                  toast(`Running ${heldBack.length} confirmed item${heldBack.length === 1 ? '' : 's'}…`);
+                  onChanged();
+                } catch (err) {
+                  toast(err instanceof Error ? err.message : 'Could not confirm those.');
+                } finally {
+                  setConfirming(false);
+                }
+              }}
+            >
+              {confirming ? 'Confirming…' : `Yes, run ${heldBack.length === 1 ? 'it' : 'them'}`}
+            </button>
+          </div>
+        ) : null}
 
         {active.map((item) => (
           <div key={item.itemId} style={{ padding: '10px 0', borderTop: '1px solid var(--border)' }}>
@@ -735,4 +813,103 @@ function resultTone(status: ItemResult['status']): 'success' | 'warning' | 'dang
     default:
       return 'default';
   }
+}
+
+
+/**
+ * The route picker.
+ *
+ * The same capture can usually be acted on more than one way — buy the book,
+ * read a summary, or turn its argument into a weekly routine. Showing those as
+ * competing routes rather than one flat checklist is the difference between
+ * "here is everything it said" and "here is what I would do if I were you".
+ *
+ * The recommended route leads, and its rationale names the facts it leaned on,
+ * so a personalized suggestion can be checked rather than merely trusted.
+ */
+function PathwayChooser({
+  pathways,
+  itemsById,
+  disabled,
+  onChoose,
+}: {
+  pathways: Pathway[];
+  itemsById: Map<string, ReviewItem>;
+  disabled: boolean;
+  onChoose: (pathway: Pathway) => void;
+}): JSX.Element {
+  // Recommended first: it is the answer to "just tell me what to do".
+  const ordered = [...pathways].sort((a, b) => Number(b.recommended) - Number(a.recommended));
+
+  return (
+    <section className="pathways">
+      <div className="section-head">
+        <h2>How you could go about it</h2>
+        <span className="faint">Pick one, or mix and match below</span>
+      </div>
+
+      <div className="pathway-grid">
+        {ordered.map((pathway) => {
+          const items = pathway.itemIds
+            .map((itemId) => itemsById.get(itemId))
+            .filter((item): item is ReviewItem => Boolean(item));
+
+          return (
+            <article
+              key={pathway.pathwayId}
+              className={`pathway-card${pathway.recommended ? ' is-recommended' : ''}`}
+            >
+              <header className="pathway-head">
+                <div className="pathway-titles">
+                  <h3>{pathway.label}</h3>
+                  <Badge>{PATHWAY_STANCE_LABELS[pathway.stance]}</Badge>
+                </div>
+                {pathway.recommended ? <Badge tone="success">Recommended for you</Badge> : null}
+              </header>
+
+              {pathway.rationale ? <p className="pathway-why">{pathway.rationale}</p> : null}
+
+              {pathway.groundedInFacts.length > 0 ? (
+                <p className="faint pathway-grounds">
+                  Because you told us about:{' '}
+                  {pathway.groundedInFacts.map((fact) => fact.replace(/_/g, ' ')).join(', ')}
+                </p>
+              ) : null}
+
+              <ul className="pathway-items">
+                {items.map((item) => (
+                  <li key={item.itemId}>
+                    <span className="pathway-item-type">{ITEM_TYPE_LABELS[item.type]}</span>
+                    {item.title}
+                  </li>
+                ))}
+              </ul>
+
+              <footer className="pathway-foot">
+                <span className="faint">
+                  {pathway.estimatedMinutes > 0 ? `~${formatMinutes(pathway.estimatedMinutes)}` : 'No time from you'}
+                  {' · '}
+                  {pathway.estimatedCostUsd > 0 ? `$${pathway.estimatedCostUsd.toFixed(2)}` : 'Free'}
+                </span>
+                <button
+                  type="button"
+                  className={`btn btn--sm${pathway.recommended ? '' : ' btn--ghost'}`}
+                  disabled={disabled}
+                  onClick={() => onChoose(pathway)}
+                >
+                  Choose this
+                </button>
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function formatMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round((minutes / 60) * 10) / 10;
+  return `${hours} hr${hours === 1 ? '' : 's'}`;
 }

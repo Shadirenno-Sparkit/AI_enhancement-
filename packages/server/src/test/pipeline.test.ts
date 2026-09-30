@@ -52,7 +52,7 @@ describe('capture → spec → approve → implement', () => {
     await runQueue();
 
     const job = getJobUnscoped(jobId)!;
-    expect(['SPEC_READY', 'NO_ACTION']).toContain(job.state);
+    expect(job.state).toBe('SPEC_READY');
     expect(job.folderName).toBeTruthy();
 
     const spec = getSpecByJob(jobId);
@@ -137,6 +137,12 @@ describe('capture → spec → approve → implement', () => {
     // Something concrete must have been produced — the whole point of the run.
     const produced = fs.readdirSync(path.join(folder, 'artifacts'));
     expect(produced.length).toBeGreaterThan(0);
+
+    // The index carries each link's status, so it must reflect the finished run
+    // rather than the state the link was in when the decision was submitted.
+    const index = fs.readFileSync(path.join(harness.dir, 'artifacts', userId, INDEX_FILE), 'utf8');
+    expect(index).not.toContain('| spec ready |');
+    expect(index).toMatch(/\| (implemented|partly implemented|needs you) \|/);
   });
 
   it('folds a duplicate share into the original job', async () => {

@@ -1175,3 +1175,321 @@ body.has-actionbar .toast {
   padding: 6px 9px;
   text-align: left;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Capture modes
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.mode-tabs {
+  display: flex;
+  gap: 6px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  margin-bottom: 10px;
+}
+
+.mode-tab {
+  flex: 1;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.mode-tab:hover { color: var(--text); }
+
+.mode-tab.is-active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.mode-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Pathways — the route chooser
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.pathways { margin-bottom: 22px; }
+
+.pathway-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  .pathway-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+}
+
+.pathway-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+/* The recommended route is the answer to "just tell me what to do", so it is
+   the one thing on the screen allowed to be loud. */
+.pathway-card.is-recommended {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow);
+}
+
+.pathway-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pathway-titles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pathway-card h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.pathway-why {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.pathway-grounds { margin: 0; font-size: 13px; }
+
+.pathway-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pathway-items li {
+  font-size: 14px;
+  line-height: 1.45;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.pathway-item-type {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.pathway-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Profile — the life context graph
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.profile .page-head { margin-bottom: 18px; }
+.profile h2 { font-size: 16px; margin: 0 0 8px; }
+.profile .small { font-size: 13px; }
+.profile .muted { color: var(--text-muted); }
+
+.profile-meter {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.meter-track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-sunken);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 240ms ease;
+}
+
+.meter-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.profile-section,
+.profile-pending {
+  margin-bottom: 22px;
+}
+
+/* Proposals the analyzer made. Tinted so they read as questions rather than
+   as things the app has already decided about you. */
+.profile-pending {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.fact-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.fact-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fact-key {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.fact-value {
+  font-size: 14.5px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.fact-actions { display: flex; gap: 6px; }
+
+.fact-prompt {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.fact-prompt label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.fact-prompt input,
+.fact-prompt select {
+  font: inherit;
+  font-size: 14.5px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  min-width: 0;
+}
+
+.fact-prompt input:focus-visible,
+.fact-prompt select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.fact-prompt.free { align-items: center; }
+.fact-prompt.free input { flex: 1; min-width: 150px; }
+
+/* The generic small/ghost button variants the profile and pathway UI use. */
+.btn.small {
+  font-size: 13px;
+  padding: 7px 12px;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.btn.ghost:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* A capture parked by triage: an invitation, not a stalled job. */
+.card--awaiting { border-color: var(--accent); }
+
+/* The trust dial's second gate: an approved item that still needs an explicit
+   yes. Warning-tinted because it is the one thing on the results screen that
+   is waiting on the user rather than reporting what happened. */
+.confirm-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 10px 0;
+}

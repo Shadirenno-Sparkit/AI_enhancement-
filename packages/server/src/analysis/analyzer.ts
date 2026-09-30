@@ -1,19 +1,31 @@
 import type {
   EffortLevel,
   ImpactLevel,
+  InputKind,
   ItemType,
+  LifeContext,
+  LifeDomain,
+  Pathway,
+  PathwayStance,
   Platform,
+  ProposedFact,
   SpecItem,
+  TriageResult,
 } from '@aiapp/shared';
 import {
   EFFORT_LEVELS,
+  FACT_CATEGORIES,
   IMPACT_LEVELS,
+  INPUT_KIND_LABELS,
   ITEM_TYPES,
   ITEM_TYPE_RISK,
   ITEM_TYPE_SCOPES,
+  LIFE_DOMAINS,
+  PATHWAY_STANCES,
   PLATFORM_LABELS,
   slugify,
 } from '@aiapp/shared';
+import type { FactCategory } from '@aiapp/shared';
 import { findMissingPrerequisites, listConnectors } from '../repo/connectors.js';
 import { getUserById } from '../repo/users.js';
 import { previouslyApprovedItems } from '../repo/specs.js';
@@ -25,6 +37,7 @@ import {
   impactFor,
   inferPrerequisites,
   methodFor,
+  stripAdviceFraming,
   titleFromTip,
   whyFor,
 } from './heuristics.js';
@@ -33,11 +46,22 @@ const log = createLogger('analysis');
 
 export type DraftItem = Omit<SpecItem, 'itemId' | 'specId' | 'ordinal'>;
 
+/**
+ * A pathway before its items have ids. The model groups items by their position
+ * in the items array; `createSpec` resolves those to real item ids once written.
+ */
+export type DraftPathway = Omit<Pathway, 'pathwayId' | 'specId' | 'itemIds'> & {
+  itemIndexes: number[];
+};
+
 export interface AnalysisResult {
   title: string;
   summaryPlainEnglish: string;
   technicalSpec: string;
   items: DraftItem[];
+  pathways: DraftPathway[];
+  domains: LifeDomain[];
+  proposedFacts: ProposedFact[];
   noActionableItems: boolean;
   usage: { modelTokens: number; usd: number };
   /** Which analyzer produced the result — shown in the UI for transparency. */
@@ -48,88 +72,139 @@ export interface AnalysisInput {
   userId: string;
   mergedText: string;
   platform: Platform;
+  inputKind: InputKind;
   url: string;
   postTitle?: string | null;
   author?: string | null;
   lowConfidence: boolean;
   overallConfidence: number;
+  /** What the app knows about the person this plan is for. */
+  lifeContext: LifeContext;
+  /** Phase-A verdict, when one was produced. */
+  triage?: TriageResult | null;
+  /** Domains the user has muted; nothing is proposed in them. */
+  mutedDomains?: LifeDomain[];
+  /** Whether the analyzer may propose additions to the life context graph. */
+  learnAboutMe?: boolean;
 }
 
-const SYSTEM_PROMPT = `You turn something a person saved — a Reel, a post, an article, a screenshot, a photo —
-into a small number of concrete changes they could actually make in their own life this week.
+const SYSTEM_PROMPT = `You turn something a person encountered in their day into a plan they can actually act on.
 
-You are given the extracted content of one item. Each line is tagged with its index and where it came
-from, e.g.
-  [3] (on-screen text @00:12) Batch your errands into one loop instead of five trips.
+The input may be a social post, an article, a note they typed, something they overheard and dictated,
+or a photo of a page. Each line is tagged with its index and where it came from, e.g.
+  [3] (author captions @00:12) Set a standing instruction to keep answers short.
 Sources ranked by reliability: author captions > post caption > on-screen text > speech-to-text > page text.
 
-WHAT COUNTS AS ACTIONABLE
-Almost anything does. This is not limited to software or productivity. A workout tip, a recipe, a
-negotiation line, a way to structure a morning, a mental model, a phrase worth remembering, a product
-worth trying — all of it counts if a person could put it into practice. Be generous and imaginative
-about what can be turned into an action.
+You are given a profile of the specific person this is for. Use it. The difference between this product
+and a summarizer is that you answer "what should *this person* do about this?" rather than "what does
+this say?". A recommendation that would suit anybody is a failure, even when it is accurate.
 
-Every successfully retrieved item must produce at least one useful outcome. If the source gives direct
-advice, turn that advice into an implementation. If it is commentary, entertainment, an ad, or a mental
-model without an explicit instruction, create one grounded generate_file item: a short application note
-that preserves what the source actually says, identifies the question or idea worth testing, and proposes
-a small experiment or reflection. Label that experiment as an application of the source, not as advice
-the creator stated. Never return an empty items array for content that was successfully retrieved.
+Your job:
+1. Work out what the content is genuinely offering this person.
+2. Write a plain-English summary addressed to them.
+3. Produce discrete, independently approvable items.
+4. Group those items into 2–3 PATHWAYS — different routes to the same benefit, with different
+   trade-offs of time, money and depth. Mark exactly one as recommended, and justify that choice
+   using specific facts from their profile.
 
-MAKE IT THEIRS, NOT GENERIC
-You may be given a description of this person's actual life — their tools, their places, the people
-around them, what they are working on. When you have it, use it in every item:
-  - name the specific app, place, or person the change touches
-  - anchor it to a real moment in their week rather than "regularly"
-  - prefer a change that fits the life described over a textbook-correct one that does not
-The difference you are aiming for is between "batch your errands" and "your Thursday grocery run
-already passes the pharmacy — combine them and drop the separate Saturday trip."
-
-If you have no context about them, still be concrete, but say plainly in the summary that these are
-starting points that would sharpen once the app knows more about their setup.
-
-HARD RULES
-- Ground every item in what the content actually says. Never invent advice that is not there.
-- Do not split one idea into several items to pad the list, and do not merge genuinely separate ideas.
+Hard rules:
+- Ground everything in the supplied text. Never invent advice that is not there.
+- Ground personalization in the supplied profile. Never invent facts about the person.
+  If you say "because you prefer X", X must appear in their profile. If the profile is empty,
+  produce a single balanced pathway and say plainly that you do not know enough about them yet.
+- Every successfully retrieved capture must produce at least one useful outcome. If it contains direct
+  advice, turn that advice into an implementation. If it is commentary, entertainment, an ad, or a
+  mental model without an explicit instruction, create one grounded generate_file application note.
+  Preserve what the source actually says and label the proposed experiment as the app's application,
+  not as advice the creator stated. Never return an empty items array for retrieved content.
+- Do not split one idea into several items to pad a pathway, and do not merge genuinely separate ideas.
 - Speech-to-text and OCR make mistakes. If a line is garbled, interpret it charitably or leave it out;
   never build an item on text you cannot read.
-- Two to four items is usually right. One excellent item beats four thin ones.
+- Never propose an item that spends money, contacts another person, or acts on someone's health or
+  finances as though it were settled. Those items PREPARE the action — an order to review, a draft to
+  send, a question to ask a professional — and the person takes the last step.
 
-HOW EACH ITEM GETS CARRIED OUT
-Every item is executed by this app on the person's behalf, so choose the type that matches how the
-change would actually stick:
-  create_skill      a reusable routine they can invoke again
-  set_instruction   a standing rule or default that changes how things behave from now on
-  schedule_task     recurring or time-anchored work ("every morning", "each Friday")
-  connect_tool      wiring up an integration the change depends on
-  download_file     fetching a resource the content points at
-  generate_file     producing a checklist, template, plan, recipe card or note they will actually open
-  configure_setting a one-time setting or toggle change
-  run_command       a command-line step (use sparingly; highest friction)
+Item types (choose the most specific that fits):
+  Acting on their AI environment:
+    create_skill      a reusable routine/skill/command they can invoke again
+    set_instruction   a standing instruction or system-prompt change
+    schedule_task     recurring or deferred work ("every morning", "each Friday")
+    connect_tool      wiring up a connector/integration the advice depends on
+    download_file     fetching a resource the content points at
+    generate_file     producing a template, checklist, prompt library or starter file
+    configure_setting a one-time setting or toggle change
+    run_command       a command-line step (use sparingly; highest friction)
+    create_project    a whole workspace/project with its own instructions and skills
+    automation_workflow  a multi-step automation across tools (exported as an n8n workflow)
+  Acting on the rest of their life:
+    acquire_media     get a book/audiobook/course — pick the FORMAT their profile says they use
+    purchase          a product or service worth buying
+    build_habit       a recurring practice, with a concrete trigger and cadence
+    learn_topic       a study plan with sequence and checkpoints
+    contact_person    reach out to someone — produces a draft, never sends
+    research_topic    go find something out before deciding
+    financial_review  examine a rate, fee or subscription — produces questions, not transactions
+
+Domains: ai_workflow learning money health career home relationships travel other
 
 When in doubt, generate_file is a good home for anything worth keeping — a plan, a checklist, a script
 to say out loud, a recipe. Write the real content, not a description of it.
 
 Return ONLY JSON matching this shape:
 {
-  "title": "short title for this item, max 8 words",
+  "title": "short title, max 8 words",
   "summary": "2-4 sentences, plain English, second person, saying what this is and why it is worth their time",
+  "domains": ["learning"],
   "noActionableItems": false,
   "items": [
     {
       "title": "imperative, max 12 words",
-      "type": "generate_file",
-      "why": "one or two sentences on what changes for them, referencing their life where you know it",
+      "type": "acquire_media",
+      "domain": "learning",
+      "why": "one or two sentences on the benefit and what changes for them",
       "proposedMethod": "concretely what should be done to make it real",
-      "prerequisites": ["calendar connector"],
+      "personalizedOn": ["audiobook_preference", "commute"],
+      "prerequisites": ["audible account"],
       "effort": "low",
       "impact": "high",
       "requiresBrowser": false,
       "sourceSegments": [3, 7],
-      "parameters": { "filename": "thursday-errand-loop.md", "content": "..." }
+      "parameters": { "title": "...", "format": "audiobook" }
+    }
+  ],
+  "pathways": [
+    {
+      "label": "Listen on the commute",
+      "stance": "fastest",
+      "rationale": "You listen to audiobooks on a 40-minute commute, so this costs you no extra time.",
+      "groundedInFacts": ["audiobook_preference", "commute"],
+      "estimatedMinutes": 0,
+      "estimatedCostUsd": 15,
+      "itemIndexes": [0, 2],
+      "recommended": true
+    }
+  ],
+  "proposedFacts": [
+    {
+      "category": "preference",
+      "key": "note_taking_tool",
+      "value": "Obsidian",
+      "confidence": 0.7,
+      "evidence": "They wrote 'my Obsidian vault' in the note."
     }
   ]
 }
+
+"personalizedOn" and "groundedInFacts" list profile keys you actually used. Leave them empty rather
+than guessing — they are shown to the user as the reason a recommendation was made, so a wrong entry
+reads as the app claiming to know something about them that it does not.
+
+"itemIndexes" are positions in your own items array. Every item must belong to at least one pathway.
+Pathway stances: fastest, deepest, cheapest, balanced, hands_off.
+
+"proposedFacts" are things you noticed about the person that are not yet in their profile. They are
+shown for confirmation and never applied silently. Only include something the content genuinely
+evidences about THEM — not about the world, and not about the author of the content.
 
 The "parameters" object is what the implementation engine consumes. Populate it richly:
   create_skill      { "name": kebab-case, "description": string, "body": full markdown of the skill }
@@ -140,23 +215,55 @@ The "parameters" object is what the implementation engine consumes. Populate it 
   download_file     { "url": string or null, "filename": string }
   configure_setting { "setting": string, "value": string, "steps": [string] }
   run_command       { "command": string, "explanation": string }
-Write real, usable content in these fields — a file or skill body should be complete enough to use as-is.`;
+  create_project    { "name": string, "purpose": string, "instructions": string, "skills": [{"name","body"}] }
+  automation_workflow { "name": string, "trigger": string, "steps": [{"name","tool","action"}] }
+  acquire_media     { "title": string, "author": string, "format": "audiobook"|"ebook"|"print"|"course",
+                      "where": string, "estimatedCostUsd": number, "why_this_format": string }
+  purchase          { "item": string, "estimatedCostUsd": number, "where": string, "checkFirst": [string] }
+  build_habit       { "habit": string, "cadence": string, "trigger": string, "cron": string, "successLooksLike": string }
+  learn_topic       { "topic": string, "sequence": [string], "checkpoints": [string], "estimatedHours": number }
+  contact_person    { "who": string, "channel": string, "draft": full message text, "goal": string }
+  research_topic    { "question": string, "sources": [string], "decidesWhat": string }
+  financial_review  { "whatToCheck": string, "questions": [string], "potentialSavingUsd": number }
+Write real, usable content in these fields — a skill body, a habit plan or an outreach draft should be
+complete enough to use as-is.`;
 
 interface ModelResponse {
   title?: string;
   summary?: string;
+  domains?: unknown;
   noActionableItems?: boolean;
   items?: {
     title?: string;
     type?: string;
+    domain?: string;
     why?: string;
     proposedMethod?: string;
+    personalizedOn?: unknown;
     prerequisites?: unknown;
     effort?: string;
     impact?: string;
     requiresBrowser?: boolean;
     sourceSegments?: unknown;
     parameters?: Record<string, unknown>;
+  }[];
+  pathways?: {
+    label?: string;
+    stance?: string;
+    rationale?: string;
+    groundedInFacts?: unknown;
+    estimatedMinutes?: number;
+    estimatedCostUsd?: number;
+    itemIndexes?: unknown;
+    recommended?: boolean;
+  }[];
+  proposedFacts?: {
+    category?: string;
+    key?: string;
+    value?: string;
+    detail?: string;
+    confidence?: number;
+    evidence?: string;
   }[];
 }
 
@@ -167,13 +274,43 @@ interface ModelResponse {
  * extractor otherwise — or when the model call fails or returns nonsense — so
  * the pipeline always reaches SPEC_READY with grounded output.
  */
-export async function analyze(input: AnalysisInput): Promise<AnalysisResult> {
+/** An empty profile: the shape used when nothing is known about the user yet. */
+const NO_CONTEXT: LifeContext = { facts: [], brief: '', factCount: 0, pendingCount: 0 };
+
+export async function analyze(rawInput: AnalysisInput): Promise<AnalysisResult> {
+  // Normalized up front so a caller that omits the profile gets generic output
+  // rather than a crash. Analysis failing outright is far worse than analysis
+  // that simply has nothing to personalize against.
+  const input: AnalysisInput = {
+    ...rawInput,
+    inputKind: rawInput.inputKind ?? 'link',
+    lifeContext: rawInput.lifeContext ?? NO_CONTEXT,
+  };
+
   if (!input.mergedText.trim()) {
     throw new Error('Analysis requires extracted source content.');
   }
 
   const modelResult = llm().live ? await analyzeWithModel(input) : null;
   const result = modelResult ?? analyzeOffline(input);
+
+  // Domains the user has muted are dropped after analysis rather than being
+  // described in the prompt: a negative instruction ("never mention health")
+  // is followed unreliably, whereas a filter here is absolute.
+  const muted = new Set(input.mutedDomains ?? []);
+  if (muted.size > 0) {
+    const kept = new Set<number>();
+    result.items = result.items.filter((item, index) => {
+      const keep = !muted.has(item.domain);
+      if (keep) kept.add(index);
+      return keep;
+    });
+    result.pathways = remapPathways(result.pathways, kept);
+    result.domains = result.domains.filter((domain) => !muted.has(domain));
+    if (result.items.length === 0) result.noActionableItems = true;
+  }
+
+  if (input.learnAboutMe === false) result.proposedFacts = [];
 
   // Prerequisite gap check runs on both paths: only the server knows which
   // connectors this user actually has (BR-A6).
@@ -218,20 +355,58 @@ function describeTheirLife(userId: string): string {
   return `${parts.join('\n\n')}\n\nUse this. Name their specific tools, places and people where it fits.\n\n`;
 }
 
+/**
+ * Rebuilds pathway membership after items have been removed.
+ *
+ * Item indexes are positional, so dropping an item silently re-points every
+ * later index at the wrong thing. Pathways left with no items are discarded.
+ */
+function remapPathways(pathways: DraftPathway[], keptIndexes: Set<number>): DraftPathway[] {
+  const remap = new Map<number, number>();
+  let next = 0;
+  for (const original of [...keptIndexes].sort((a, b) => a - b)) remap.set(original, next++);
+
+  return pathways
+    .map((pathway) => ({
+      ...pathway,
+      itemIndexes: pathway.itemIndexes
+        .filter((index) => remap.has(index))
+        .map((index) => remap.get(index)!),
+    }))
+    .filter((pathway) => pathway.itemIndexes.length > 0);
+}
+
 async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | null> {
   const confidenceNote = input.lowConfidence
     ? `\n\nNOTE: this extraction is low confidence (${input.overallConfidence.toFixed(2)}). Be conservative — prefer fewer, well-supported items over speculative ones.`
     : '';
 
+  const profileBlock = input.lifeContext.brief
+    ? `\n--- ABOUT THIS PERSON ---\n${input.lifeContext.brief}\n--- END PROFILE ---\n`
+    : '\n--- ABOUT THIS PERSON ---\n(nothing recorded yet)\n--- END PROFILE ---\n' +
+      'Their profile is empty, so you cannot personalize. Produce one balanced pathway and say in the\n' +
+      'summary that filling in their profile would let you tailor this properly. Do not guess at\n' +
+      'preferences to fill the gap.\n';
+
+  const triageNote = input.triage
+    ? `\nTriage read this as ${input.triage.verdict} in ${input.triage.domains.join(', ')} — "${input.triage.headline}"\n`
+    : '';
+
+  const sourceLine =
+    input.inputKind === 'link'
+      ? `Platform: ${PLATFORM_LABELS[input.platform]}\nURL: ${input.url}\n`
+      : `Captured as: ${INPUT_KIND_LABELS[input.inputKind]}\n`;
+
   const response = await completeJson<ModelResponse>({
     system: SYSTEM_PROMPT,
     prompt:
       describeTheirLife(input.userId) +
-      `Platform: ${PLATFORM_LABELS[input.platform]}\n` +
-      `URL: ${input.url}\n` +
-      (input.postTitle ? `Post title: ${input.postTitle}\n` : '') +
+      sourceLine +
+      (input.postTitle ? `Title: ${input.postTitle}\n` : '') +
       (input.author ? `Author: ${input.author}\n` : '') +
-      `\n--- POST CONTENT ---\n${input.mergedText.slice(0, 60_000)}\n--- END ---${confidenceNote}`,
+      profileBlock +
+      triageNote +
+      `\n--- CAPTURED CONTENT ---\n${input.mergedText.slice(0, 60_000)}\n--- END ---${confidenceNote}`,
     maxTokens: 8192,
   });
 
@@ -249,17 +424,37 @@ async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | 
   if (!summary) return null;
 
   if (items.length === 0) {
-    return learningFallback(input, summary, {
-      modelTokens: response.usage.inputTokens + response.usage.outputTokens,
-      usd: response.usage.usd,
-    }, llm().name);
+    return learningFallback(
+      input,
+      summary,
+      {
+        modelTokens: response.usage.inputTokens + response.usage.outputTokens,
+        usd: response.usage.usd,
+      },
+      llm().name,
+    );
   }
 
+  const knownKeys = new Set(input.lifeContext.facts.map((fact) => fact.key));
+  const pathways = normalizePathways(body.pathways, items.length, knownKeys);
+
+  // A claim of personalization is only kept when it names a fact we actually
+  // hold. Otherwise the UI would render "because you prefer…" for a preference
+  // the user never told us, which is worse than no personalization at all.
+  for (const item of items) {
+    item.personalizedOn = item.personalizedOn.filter((key) => knownKeys.has(key));
+  }
+
+  const domains = normalizeDomains(body.domains, items);
+
   return {
-    title: (body.title ?? input.postTitle ?? 'Captured post').trim().slice(0, 120),
+    title: (body.title ?? input.postTitle ?? 'Capture').trim().slice(0, 120),
     summaryPlainEnglish: summary,
-    technicalSpec: renderTechnicalSpec(input, summary, items),
+    technicalSpec: renderTechnicalSpec(input, summary, items, pathways),
     items,
+    pathways,
+    domains,
+    proposedFacts: normalizeProposedFacts(body.proposedFacts, knownKeys),
     noActionableItems: false,
     usage: {
       modelTokens: response.usage.inputTokens + response.usage.outputTokens,
@@ -267,6 +462,119 @@ async function analyzeWithModel(input: AnalysisInput): Promise<AnalysisResult | 
     },
     analyzer: llm().name,
   };
+}
+
+/**
+ * Validates the model's pathway grouping.
+ *
+ * Two invariants matter: every item must be reachable from some pathway (an
+ * orphaned item would be invisible in a pathway-driven UI), and exactly one
+ * pathway may be recommended.
+ */
+function normalizePathways(
+  raw: ModelResponse['pathways'],
+  itemCount: number,
+  knownKeys: Set<string>,
+): DraftPathway[] {
+  if (itemCount === 0) return [];
+
+  const pathways: DraftPathway[] = (raw ?? [])
+    .map((entry, index) => {
+      const itemIndexes = Array.isArray(entry.itemIndexes)
+        ? [
+            ...new Set(
+              entry.itemIndexes.filter(
+                (value): value is number =>
+                  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < itemCount,
+              ),
+            ),
+          ]
+        : [];
+      const label = (entry.label ?? '').trim();
+      if (!label || itemIndexes.length === 0) return null;
+
+      const stance: PathwayStance = (PATHWAY_STANCES as readonly string[]).includes(entry.stance ?? '')
+        ? (entry.stance as PathwayStance)
+        : 'balanced';
+
+      return {
+        label: label.slice(0, 80),
+        stance,
+        rationale: (entry.rationale ?? '').trim().slice(0, 600),
+        groundedInFacts: Array.isArray(entry.groundedInFacts)
+          ? entry.groundedInFacts.filter(
+              (key): key is string => typeof key === 'string' && knownKeys.has(key),
+            )
+          : [],
+        estimatedMinutes: Math.max(0, Math.round(Number(entry.estimatedMinutes) || 0)),
+        estimatedCostUsd: Math.max(0, Number(entry.estimatedCostUsd) || 0),
+        itemIndexes,
+        recommended: entry.recommended === true,
+        ordinal: index,
+      };
+    })
+    .filter((pathway): pathway is DraftPathway => pathway !== null);
+
+  if (pathways.length === 0) return [];
+
+  // Any item the model forgot to place goes on the recommended route rather
+  // than disappearing from the review screen.
+  const placed = new Set(pathways.flatMap((pathway) => pathway.itemIndexes));
+  const orphans = Array.from({ length: itemCount }, (_, index) => index).filter((index) => !placed.has(index));
+
+  const recommendedIndex = Math.max(
+    0,
+    pathways.findIndex((pathway) => pathway.recommended),
+  );
+  if (orphans.length > 0) {
+    pathways[recommendedIndex]!.itemIndexes = [
+      ...new Set([...pathways[recommendedIndex]!.itemIndexes, ...orphans]),
+    ].sort((a, b) => a - b);
+  }
+
+  pathways.forEach((pathway, index) => {
+    pathway.recommended = index === recommendedIndex;
+    pathway.ordinal = index;
+  });
+
+  return pathways;
+}
+
+function normalizeDomains(raw: unknown, items: DraftItem[]): LifeDomain[] {
+  const fromModel = Array.isArray(raw)
+    ? (raw.filter((domain): domain is LifeDomain =>
+        (LIFE_DOMAINS as readonly string[]).includes(domain as string),
+      ) as LifeDomain[])
+    : [];
+  if (fromModel.length > 0) return [...new Set(fromModel)].slice(0, 4);
+  // Fall back to whatever the items themselves claim.
+  return [...new Set(items.map((item) => item.domain))].slice(0, 4);
+}
+
+function normalizeProposedFacts(
+  raw: ModelResponse['proposedFacts'],
+  knownKeys: Set<string>,
+): ProposedFact[] {
+  return (raw ?? [])
+    .map((entry): ProposedFact | null => {
+      const key = (entry.key ?? '').trim();
+      const value = (entry.value ?? '').trim();
+      const category = entry.category as FactCategory;
+      if (!key || !value) return null;
+      if (!(FACT_CATEGORIES as readonly string[]).includes(category)) return null;
+      // Never re-propose something already on file.
+      if (knownKeys.has(key)) return null;
+      return {
+        category,
+        key: key.slice(0, 60),
+        value: value.slice(0, 300),
+        detail: entry.detail?.trim().slice(0, 500) ?? null,
+        confidence: Math.max(0, Math.min(1, Number(entry.confidence) || 0.5)),
+        evidence: (entry.evidence ?? '').trim().slice(0, 400),
+      };
+    })
+    .filter((fact): fact is ProposedFact => fact !== null)
+    .slice(0, 8);
 }
 
 function normalizeModelItem(raw: NonNullable<ModelResponse['items']>[number]): DraftItem | null {
@@ -290,6 +598,14 @@ function normalizeModelItem(raw: NonNullable<ModelResponse['items']>[number]): D
     ? raw.sourceSegments.filter((n): n is number => typeof n === 'number').slice(0, 20)
     : [];
 
+  const domain: LifeDomain = (LIFE_DOMAINS as readonly string[]).includes(raw.domain ?? '')
+    ? (raw.domain as LifeDomain)
+    : domainForType(type);
+
+  const personalizedOn = Array.isArray(raw.personalizedOn)
+    ? raw.personalizedOn.filter((key): key is string => typeof key === 'string' && key.length > 0).slice(0, 6)
+    : [];
+
   return {
     title: title.slice(0, 140),
     type,
@@ -307,7 +623,29 @@ function normalizeModelItem(raw: NonNullable<ModelResponse['items']>[number]): D
     parameters: raw.parameters && typeof raw.parameters === 'object' ? raw.parameters : {},
     sourceSegments,
     duplicateOfItemId: null,
+    domain,
+    personalizedOn,
   };
+}
+
+/** The domain an item type belongs to when the model did not say. */
+function domainForType(type: ItemType): LifeDomain {
+  switch (type) {
+    case 'acquire_media':
+    case 'learn_topic':
+      return 'learning';
+    case 'purchase':
+    case 'financial_review':
+      return 'money';
+    case 'contact_person':
+      return 'relationships';
+    case 'build_habit':
+      return 'health';
+    case 'research_topic':
+      return 'other';
+    default:
+      return 'ai_workflow';
+  }
 }
 
 /** Rule-based path: real extraction, no model required. */
@@ -335,17 +673,42 @@ function analyzeOffline(input: AnalysisInput): AnalysisResult {
       parameters: offlineParameters(type, tip.text),
       sourceSegments: tip.segmentOrders,
       duplicateOfItemId: null,
+      domain: domainForType(type),
+      // The offline path does no personalization and says so by leaving this
+      // empty, rather than implying a tailoring it did not perform.
+      personalizedOn: [],
     };
   });
 
   const title = input.postTitle?.trim() || titleFromTip(tips[0]!.text);
   const summary = renderOfflineSummary(input, tips.map((t) => t.text));
 
+  // One route only. Offering a choice of pathways requires knowing enough about
+  // someone to say why one suits them, which the rule-based path cannot do.
+  const pathways: DraftPathway[] = [
+    {
+      label: 'Set it all up',
+      stance: 'balanced',
+      rationale:
+        'Every item found in this capture, in the order it appeared. Connect a model to get routes ' +
+        'tailored to how you actually work.',
+      groundedInFacts: [],
+      estimatedMinutes: items.length * 5,
+      estimatedCostUsd: 0,
+      itemIndexes: items.map((_, index) => index),
+      recommended: true,
+      ordinal: 0,
+    },
+  ];
+
   return {
     title: title.slice(0, 120),
     summaryPlainEnglish: summary,
-    technicalSpec: renderTechnicalSpec(input, summary, items),
+    technicalSpec: renderTechnicalSpec(input, summary, items, pathways),
     items,
+    pathways,
+    domains: input.triage?.domains ?? [...new Set(items.map((item) => item.domain))].slice(0, 4),
+    proposedFacts: [],
     noActionableItems: false,
     usage: { modelTokens: 0, usd: 0 },
     analyzer: 'offline',
@@ -428,7 +791,11 @@ function offlineParameters(type: ItemType, tip: string): Record<string, unknown>
  * up telling the assistant to add an instruction.
  */
 function asInstruction(tip: string): string {
-  const stripped = tip
+  // Connectives first. The meta-strip below is anchored at the start of the
+  // string, so a leading "And"/"Also" defeats it entirely and the instructions
+  // file ends up telling the assistant to *set an instruction* — the exact
+  // failure this function exists to prevent.
+  const stripped = stripAdviceFraming(tip)
     .replace(
       /^\s*(also\s+)?(add|set|give|create|write|put|include)\s+(a|an|the)?\s*(standing|custom|system|default)?\s*(instruction|prompt|rule|directive)s?\s*(to|that|saying|which says)?\s*/i,
       '',
@@ -506,12 +873,13 @@ function learningFallback(
   ).slice(0, 20);
   const title = input.postTitle?.trim().slice(0, 120) || titleFromTip(excerpts[0] ?? 'Apply this saved idea');
   const filename = `${slugify(title, 48) || 'saved-idea'}-application-note.md`;
+  const domain = input.triage?.domains[0] ?? 'other';
   const personalContext = getUserById(input.userId)?.preferences.personalContext?.trim();
   const sourceBlock = excerpts.map((excerpt) => `> ${excerpt}`).join('\n>\n');
   const content = [
     `# Apply: ${title}`,
     '',
-    `Source: ${input.url}`,
+    `Source: ${input.inputKind === 'link' ? input.url : INPUT_KIND_LABELS[input.inputKind]}`,
     '',
     '## What the source actually contains',
     '',
@@ -552,16 +920,35 @@ function learningFallback(
     parameters: { filename, content },
     sourceSegments,
     duplicateOfItemId: null,
+    domain,
+    personalizedOn: [],
   };
   const summary = modelSummary
     ? `${modelSummary}\n\nRather than discard the link, the app prepared one grounded application note so you can test whether the idea changes anything in your life or work.`
     : 'This source did not state a clean step-by-step recommendation. Rather than discard it, the app prepared a grounded application note that preserves the source and turns your interest in it into one small test.';
 
+  const pathways: DraftPathway[] = [
+    {
+      label: 'Test the idea safely',
+      stance: 'balanced',
+      rationale: 'A small reversible experiment preserves the useful part of the capture without inventing advice.',
+      groundedInFacts: [],
+      estimatedMinutes: 20,
+      estimatedCostUsd: 0,
+      itemIndexes: [0],
+      recommended: true,
+      ordinal: 0,
+    },
+  ];
+
   return {
     title,
     summaryPlainEnglish: summary,
-    technicalSpec: renderTechnicalSpec(input, summary, [item]),
+    technicalSpec: renderTechnicalSpec(input, summary, [item], pathways),
     items: [item],
+    pathways,
+    domains: [domain],
+    proposedFacts: [],
     noActionableItems: false,
     usage,
     analyzer,
@@ -572,20 +959,28 @@ function learningFallback(
  * The 04_spec.md artifact: what Claude would need to do to apply this post's
  * advice in the user's environment (BR-A3).
  */
-function renderTechnicalSpec(input: AnalysisInput, summary: string, items: DraftItem[]): string {
+function renderTechnicalSpec(
+  input: AnalysisInput,
+  summary: string,
+  items: DraftItem[],
+  pathways: DraftPathway[],
+): string {
   const lines: string[] = [
     `# Technical specification`,
     '',
-    `**Source:** ${input.url}`,
-    `**Platform:** ${PLATFORM_LABELS[input.platform]}`,
+    `**Source:** ${input.inputKind === 'link' ? input.url : INPUT_KIND_LABELS[input.inputKind]}`,
+    input.inputKind === 'link' ? `**Platform:** ${PLATFORM_LABELS[input.platform]}` : '',
     input.author ? `**Author:** ${input.author}` : '',
     `**Extraction confidence:** ${(input.overallConfidence * 100).toFixed(0)}%${input.lowConfidence ? ' — flagged low' : ''}`,
+    `**Personalized against:** ${
+      input.lifeContext.factCount > 0
+        ? `${input.lifeContext.factCount} profile fact${input.lifeContext.factCount === 1 ? '' : 's'}`
+        : 'nothing — profile is empty'
+    }`,
     '',
-    '## What the post recommends',
+    '## What this recommends',
     '',
     summary,
-    '',
-    '## Proposed items',
     '',
   ].filter(Boolean);
 
@@ -594,6 +989,27 @@ function renderTechnicalSpec(input: AnalysisInput, summary: string, items: Draft
     return lines.join('\n');
   }
 
+  if (pathways.length > 0) {
+    lines.push('## Routes', '');
+    for (const pathway of pathways) {
+      lines.push(
+        `### ${pathway.label}${pathway.recommended ? ' — recommended' : ''}`,
+        '',
+        `**Stance:** ${pathway.stance} · **Time:** ~${pathway.estimatedMinutes} min · **Cost:** $${pathway.estimatedCostUsd.toFixed(2)}`,
+        '',
+        pathway.rationale,
+        '',
+        `**Covers items:** ${pathway.itemIndexes.map((index) => index + 1).join(', ')}`,
+        pathway.groundedInFacts.length > 0
+          ? `**Based on what we know about you:** ${pathway.groundedInFacts.join(', ')}`
+          : '',
+        '',
+      );
+    }
+  }
+
+  lines.push('## Proposed items', '');
+
   items.forEach((item, index) => {
     lines.push(
       `### ${index + 1}. ${item.title}`,
@@ -601,6 +1017,8 @@ function renderTechnicalSpec(input: AnalysisInput, summary: string, items: Draft
       `| Field | Value |`,
       `| --- | --- |`,
       `| Type | \`${item.type}\` |`,
+      `| Domain | ${item.domain} |`,
+      `| Personalized on | ${item.personalizedOn.length ? item.personalizedOn.join(', ') : '—'} |`,
       `| Effort / Impact | ${item.effort} / ${item.impact} |`,
       `| Risk tier | ${item.riskTier} |`,
       `| Permission scopes | ${item.scopes.map((s) => `\`${s}\``).join(', ')} |`,

@@ -12,7 +12,7 @@ failure or authentication requirement—never “no insight found.”
 
 ## Repository state
 
-- Branch: `claude/shadirenno-sparkit-app-dqyff1`
+- Branch: `main`
 - Remote: `https://github.com/Shadirenno-Sparkit/AI_enhancement-.git`
 - Monorepo: shared types, Express/SQLite server, React/Vite PWA and desktop bridge
 - Required Node version: 20.11+
@@ -28,10 +28,10 @@ npm test
 npm audit
 ```
 
-Current baseline: 92 tests pass; build and typecheck pass; `npm audit` reports
+Current baseline: 131 tests pass; build and typecheck pass; `npm audit` reports
 zero known vulnerabilities.
 
-## Changes in the current working tree
+## Current integrated product
 
 - Retrieval with zero usable segments now ends in `NEEDS_INPUT` (authentication)
   or `FAILED` (extraction/configuration), with `failureCode` and `requiredAction`.
@@ -41,6 +41,15 @@ zero known vulnerabilities.
 - Successfully retrieved content always yields an item. Direct advice becomes
   an implementation item; non-instructional content becomes a grounded
   application note and labelled small experiment.
+- Universal capture accepts links, typed notes, voice memos and photos.
+- A confirmed life-context graph personalizes every analysis; inferred facts
+  remain pending until the user accepts them on the **You** screen.
+- Analysis can offer multiple pathways with an explicit recommended route,
+  including bounded life-domain actions such as habits, learning plans,
+  research, purchase preparation and message drafts.
+- A cheap triage pass classifies relevance and domains. The utility-first
+  default still plans every readable capture; users can raise the threshold in
+  Settings when they prefer lower model spend.
 - Extraction caches are user-scoped. The previous global URL cache could reuse
   one customer's private transcript or shared caption for another customer.
 - Local one-time sign-in is implemented for YouTube, Instagram, TikTok, X,

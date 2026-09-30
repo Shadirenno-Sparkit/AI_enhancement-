@@ -108,8 +108,9 @@ Poll a link through the pipeline.
 }
 ```
 
-States: `RECEIVED → RESOLVED → FETCHED → TRANSCRIBED → NORMALIZED → ANALYZED →
-SPEC_READY → AWAITING_DECISION → IMPLEMENTING → DONE`, plus terminal `PARTIAL`,
+States: `RECEIVED → RESOLVED → FETCHED → TRANSCRIBED → NORMALIZED → TRIAGED →
+ANALYZED → SPEC_READY → AWAITING_DECISION → IMPLEMENTING → DONE`, with optional
+`AWAITING_PLAN` after triage and terminal `PARTIAL`,
 `NEEDS_INPUT`, `NO_ACTION`, `FAILED`. `NO_ACTION` means the user deliberately
 closed/skipped the proposed work; content retrieval failure uses `NEEDS_INPUT`
 or `FAILED` with a machine-readable `requiredAction`.

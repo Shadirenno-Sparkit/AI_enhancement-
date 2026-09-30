@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { executeRun } from '../implementation/engine.js';
 import { nextRunFor, parseCron, cronMatches } from '../implementation/cron.js';
-import { failJob, processJob } from '../orchestrator/pipeline.js';
+import { failJob, planJob, processJob } from '../orchestrator/pipeline.js';
 import { purgeExpiredMedia } from '../artifacts/fileManager.js';
 import { deliver, notify } from '../notifications/notify.js';
 import { clearDeferral, dueDeferredNotifications } from '../repo/notifications.js';
@@ -22,6 +22,12 @@ export async function handleQueueItem(item: QueueItem): Promise<void> {
   if (item.kind === 'process') {
     incrementAttempts(item.jobId);
     await processJob(item.jobId, { force: item.payload['force'] === true });
+    return;
+  }
+  if (item.kind === 'plan') {
+    // The deep plan, requested on a capture triage had parked. Extraction is
+    // already done and stored, so this re-enters at phase B only.
+    await planJob(item.jobId);
     return;
   }
   if (item.kind === 'implement') {
